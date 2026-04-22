@@ -1,0 +1,33 @@
+# Placeholder for the v2 FRP migration.
+#
+# When you're ready to swap Cloudflare Tunnel for self-hosted FRP, this is
+# where the VPS-side Caddyfile goes. Rename this to `Caddyfile` and deploy it
+# to the VPS that hosts your frps.
+#
+# The architecture then looks like:
+#
+#   [client]
+#       ↓ HTTPS
+#   [llm.yourdomain.com] → [your VPS]
+#                            Caddy (terminates TLS, Let's Encrypt)
+#                              ↓ HTTP
+#                            frps (listens on 7000)
+#                              ↑ reverse tunnel
+#                            frpc (runs in the SkyPilot container)
+#                              ↓
+#                            llama-server :8080
+#
+# Clients keep pointing at https://llm.yourdomain.com/v1 — the URL does not
+# change between v1 (CF Tunnel) and v2 (FRP). Only the DNS target changes:
+# CNAME to the CF tunnel → A-record to this VPS's IP.
+#
+# See README.md §"Migrating to FRP" for the full swap procedure.
+#
+# Example Caddyfile for the VPS (uncomment and customize when migrating):
+#
+# llm.yourdomain.com {
+#     reverse_proxy localhost:8080
+# }
+#
+# Where localhost:8080 is what frps exposes locally after accepting the
+# reverse tunnel from frpc running inside the SkyPilot container.

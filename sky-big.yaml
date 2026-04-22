@@ -1,0 +1,86 @@
+name: llm-cpp-big
+
+# "Big" preset: 48–80 GB single-GPU tier for models that don't fit on a 24 GB
+# card. Same stack as sky.yaml (llama.cpp + cloudflared), different GPU class
+# and a shorter wall-clock default because hourly cost is several × higher.
+#
+# Usage:
+#   YAML=sky-big.yaml make up
+#
+# Before launching, remember to point LLM_HF_REPO / LLM_HF_FILE in .env at a
+# model that actually needs this tier — default is still SmolLM2-360M, which
+# will run fine but waste the hardware.
+
+envs:
+  LLM_HOSTNAME: ""
+  CF_TUNNEL_TOKEN: ""
+  LLM_API_KEY: ""
+  LLM_HF_REPO: ggml-org/SmolLM2-360M-Instruct-GGUF
+  LLM_HF_FILE: SmolLM2-360M-Instruct-Q8_0.gguf
+  HF_TOKEN: ""
+  IDLE_MINUTES: "15"
+  # Shorter than sky.yaml's 240 min default — at A100/H100 rates ($2–10/hr)
+  # an overnight wedge is a $50+ mistake. Override in .env if you need longer.
+  MAX_RUNTIME_MINUTES: "60"
+
+resources:
+  cloud: runpod
+  # 48–80 GB tier. SkyPilot picks the cheapest available at launch.
+  # Order intentional: A6000 (48 GB) is often cheapest; H100 last because
+  # it's the most expensive but most available.
+  accelerators: {A6000:1, L40S:1, A100-80GB:1, A100:1, H100:1}
+  # Bigger disk for bigger models — 70B Q4 is ~40 GB, 120B Q4 is ~70 GB.
+  disk_size: 250
+  ports: 8080
+
+workdir: .
+
+setup: |
+  set -e
+  docker pull ghcr.io/ggml-org/llama.cpp:server-cuda
+  docker pull cloudflare/cloudflared:latest
+
+run: |
+  set -e
+
+  sudo shutdown -h +${MAX_RUNTIME_MINUTES} "skypilot-llms wall-clock cap" &
+
+  : "${LLM_HOSTNAME:?LLM_HOSTNAME is required — set it in .env}"
+  : "${CF_TUNNEL_TOKEN:?CF_TUNNEL_TOKEN is required — set it in .env}"
+  : "${LLM_API_KEY:?LLM_API_KEY is required — set it in .env}"
+
+  docker rm -f llama-server 2>/dev/null || true
+  docker run -d --name llama-server \
+    --gpus all \
+    --network host \
+    --restart unless-stopped \
+    -v "$HOME/.cache/huggingface:/root/.cache/huggingface" \
+    -e HF_TOKEN="${HF_TOKEN}" \
+    ghcr.io/ggml-org/llama.cpp:server-cuda \
+      --hf-repo "${LLM_HF_REPO}" \
+      --hf-file "${LLM_HF_FILE}" \
+      --api-key "${LLM_API_KEY}" \
+      --host 0.0.0.0 --port 8080 \
+      --metrics \
+      -ngl 99
+
+  # Big models take longer to download + load — wait up to 20 minutes.
+  echo "Waiting for llama-server to become healthy..."
+  for i in $(seq 1 240); do
+    if curl -sf http://localhost:8080/health >/dev/null 2>&1; then
+      echo "llama-server is ready"
+      break
+    fi
+    sleep 5
+  done
+
+  docker rm -f cloudflared 2>/dev/null || true
+  docker run -d --name cloudflared \
+    --network host \
+    --restart unless-stopped \
+    cloudflare/cloudflared:latest \
+      tunnel --no-autoupdate run --token "${CF_TUNNEL_TOKEN}"
+
+  echo "Tunnel up: https://${LLM_HOSTNAME}/v1"
+
+  bash scripts/idle-watch.sh

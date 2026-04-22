@@ -1,0 +1,83 @@
+name: llm-cpp
+
+# All user-specific values come from .env (via `--env-file .env` on launch).
+# See .env.example for what to set.
+envs:
+  LLM_HOSTNAME: ""
+  CF_TUNNEL_TOKEN: ""
+  LLM_API_KEY: ""
+  LLM_HF_REPO: ggml-org/SmolLM2-360M-Instruct-GGUF
+  LLM_HF_FILE: SmolLM2-360M-Instruct-Q8_0.gguf
+  HF_TOKEN: ""
+  IDLE_MINUTES: "15"
+  MAX_RUNTIME_MINUTES: "240"
+
+resources:
+  cloud: runpod
+  # RunPod-available GPUs with >=24 GB VRAM. SkyPilot picks the cheapest
+  # currently available. To widen to other providers later, remove `cloud:`
+  # and add A10G/L4 etc. — see README "Multi-provider".
+  accelerators: {RTX4090:1, RTX3090:1, RTXA5000:1, RTXA6000:1, L40S:1}
+  disk_size: 100
+  ports: 8080
+
+workdir: .
+
+setup: |
+  set -e
+  # Pull container images ahead of time so `run:` is fast
+  docker pull ghcr.io/ggml-org/llama.cpp:server-cuda
+  docker pull cloudflare/cloudflared:latest
+
+run: |
+  set -e
+
+  # Wall-clock safety net: force shutdown after MAX_RUNTIME_MINUTES no matter what.
+  # Protects against a wedged idle-watcher leaving the GPU running overnight.
+  sudo shutdown -h +${MAX_RUNTIME_MINUTES} "skypilot-llms wall-clock cap" &
+
+  # Fail fast on missing required config
+  : "${LLM_HOSTNAME:?LLM_HOSTNAME is required — set it in .env}"
+  : "${CF_TUNNEL_TOKEN:?CF_TUNNEL_TOKEN is required — set it in .env}"
+  : "${LLM_API_KEY:?LLM_API_KEY is required — set it in .env}"
+
+  # Start llama.cpp server
+  docker rm -f llama-server 2>/dev/null || true
+  docker run -d --name llama-server \
+    --gpus all \
+    --network host \
+    --restart unless-stopped \
+    -v "$HOME/.cache/huggingface:/root/.cache/huggingface" \
+    -e HF_TOKEN="${HF_TOKEN}" \
+    ghcr.io/ggml-org/llama.cpp:server-cuda \
+      --hf-repo "${LLM_HF_REPO}" \
+      --hf-file "${LLM_HF_FILE}" \
+      --api-key "${LLM_API_KEY}" \
+      --host 0.0.0.0 --port 8080 \
+      --metrics \
+      -ngl 99
+
+  # Wait for llama-server to be ready (model download can take a minute)
+  echo "Waiting for llama-server to become healthy..."
+  for i in $(seq 1 120); do
+    if curl -sf http://localhost:8080/health >/dev/null 2>&1; then
+      echo "llama-server is ready"
+      break
+    fi
+    sleep 5
+  done
+
+  # Start Cloudflare Tunnel
+  docker rm -f cloudflared 2>/dev/null || true
+  docker run -d --name cloudflared \
+    --network host \
+    --restart unless-stopped \
+    cloudflare/cloudflared:latest \
+      tunnel --no-autoupdate run --token "${CF_TUNNEL_TOKEN}"
+
+  echo "Tunnel up: https://${LLM_HOSTNAME}/v1"
+  echo "Test:  curl https://${LLM_HOSTNAME}/v1/models -H 'Authorization: Bearer \$LLM_API_KEY'"
+
+  # Block on the idle-watcher — when it exits, the SkyPilot job finishes and
+  # --idle-minutes-to-autostop + --down will terminate the cluster.
+  bash scripts/idle-watch.sh
