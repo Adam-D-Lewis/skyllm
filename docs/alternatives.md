@@ -4,6 +4,25 @@ Snapshot of the competitive landscape evaluated before writing this scaffold. If
 
 Evaluation date: **2026-04-22**. Re-verify if >6 months stale.
 
+## Why vLLM and not llama.cpp (pivoted mid-build)
+
+This scaffold originally targeted llama.cpp, on the theory that config parity with the owner's local `llama-router` (GGUF + CPU-MoE offload + router-mode hot-swap) would be valuable. Pivoted to vLLM at the first real launch attempt after finding:
+
+- **RunPod's default SkyPilot pod image has no docker.** Our planned "docker pull llama.cpp image as a sidecar" architecture failed immediately: `bash: docker: command not found`. Installing docker inside a RunPod pod (already a container) requires privileged DinD — not guaranteed.
+- **No prebuilt Linux CUDA `llama-server` binary exists.** ggml-org's GitHub releases ship Windows CUDA + Linux CPU/Vulkan — no Linux CUDA. Options to fix: build from source in setup (~5–10 min per cold launch) or publish our own Docker image (adds registry infra + maintenance burden).
+- **vLLM is pip-installable with official support for the pattern.** SkyPilot's canonical `docs.skypilot.co/en/latest/examples/models/llama-3.html` example uses the default cloud image and does `pip install vllm` inside a conda env during `setup:`. This works on every cloud including RunPod.
+  - Worth flagging a near-miss we hit: `image_id: docker:vllm/vllm-openai:latest` *sounds* nicer (fast cold start, no pip install) and SkyPilot's `llm/vllm/serve-openai-api-docker.yaml` uses exactly that. But it only works on AWS/GCP where SkyPilot runs the image as a container *on top of* a VM that has sshd. **On RunPod the pod IS the container**, so the container itself has to run sshd — vllm/vllm-openai doesn't, and launches fail with `ConnectionRefusedError [Errno 111]` on port 22 after 600s. Do not re-attempt this on RunPod without building a custom image that bundles vLLM + sshd.
+- **vLLM exposes `/v1/*` (OpenAI), `/health`, and `/metrics` (Prometheus counter `vllm:generation_tokens_total`) natively.** The existing scaffold's idle-watch, tunnel, auth, and safeguards work unmodified after a one-line metric name change.
+- **Throughput is meaningfully better** on a full-VRAM GPU. The reasons to pick llama.cpp locally (aggressive quant + MoE CPU offload on 12 GB 3060) don't apply once we have 24 GB+ of VRAM to spend.
+
+**Conclusion:** the owner's local `llama-router` stays llama.cpp / GGUF. This cloud scaffold is vLLM-native. That's a cleaner separation than the hybrid originally planned.
+
+If you're tempted to flip this back to llama.cpp, first verify the original blockers have changed:
+1. Does ggml-org now ship Linux CUDA prebuilt binaries? (check their Releases page)
+2. OR is there a maintained, publicly-pulled-without-auth llama.cpp image with sshd + python pre-installed that SkyPilot's bootstrap can use? The upstream `ghcr.io/ggml-org/llama.cpp:server-cuda` at time of pivot had llama-server + CUDA libs only — no Python, no sshd.
+
+If both stay "no," stay on vLLM.
+
 ## Use case being evaluated against
 
 - Spin up one cheap RunPod GPU (RTX 3090/4090 class) on demand.

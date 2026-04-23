@@ -1,8 +1,8 @@
 # skypilot-llms
 
-Cheap, on-demand cloud GPU running an OpenAI-compatible llama.cpp endpoint, reachable from any tool via a stable public URL.
+Cheap, on-demand cloud GPU running an OpenAI-compatible vLLM endpoint, reachable from any tool via a stable public URL.
 
-One `make up` spins up a 24 GB+ NVIDIA GPU on RunPod, starts `llama-server` inside a Docker container, and exposes it through a Cloudflare Tunnel at a hostname you control. Clients point at `https://llm.yourdomain.com/v1` forever — the actual GPU comes and goes, the URL stays.
+One `make up` spins up a 24 GB+ NVIDIA GPU on RunPod, starts vLLM's OpenAI-compatible server, and exposes it through a Cloudflare Tunnel at a hostname you control. Clients point at `https://llm.yourdomain.com/v1` forever — the actual GPU comes and goes, the URL stays.
 
 ## Why
 
@@ -13,15 +13,16 @@ Run bigger models than your local GPU can handle, without paying for a 24/7 clou
 | Piece | What it does |
 |---|---|
 | **SkyPilot** | Provisions the GPU on RunPod, handles autostop/teardown |
-| **llama.cpp** | Serves the model with an OpenAI-compatible API (`ghcr.io/ggml-org/llama.cpp:server-cuda`) |
+| **vLLM** | Serves the model with an OpenAI-compatible API. Pod runs `vllm/vllm-openai:latest` directly — no custom Docker image to maintain. |
 | **Cloudflare Tunnel** | Gives you a stable public URL without opening ports |
-| **Docker** | Runs llama.cpp + cloudflared as sidecars inside the SkyPilot task |
+
+For llama.cpp / GGUF workflows, see the companion `llama-router` project — this repo is vLLM-native for cloud. See [`docs/alternatives.md`](docs/alternatives.md) for why the split.
 
 ## Safeguards against surprise bills
 
 Belt, suspenders, and a third belt:
 
-1. **Idle auto-shutdown.** `scripts/idle-watch.sh` watches llama-server's Prometheus metrics; when no tokens have been generated for `$IDLE_MINUTES` (default 15), it exits the SkyPilot run block. Combined with `sky launch --down`, this terminates the cluster.
+1. **Idle auto-shutdown.** `scripts/idle-watch.sh` watches vLLM's Prometheus metrics (`vllm:generation_tokens_total`); when no tokens have been generated for `$IDLE_MINUTES` (default 15), it exits the SkyPilot run block. Combined with `sky launch --down`, this terminates the cluster.
 2. **Wall-clock cap.** `sudo shutdown -h +$MAX_RUNTIME_MINUTES` runs at launch (4 h default on `sky.yaml`, 1 h on `sky-big.yaml` since hourly rates are several × higher). Even if the idle-watcher wedges, the box powers off.
 3. **SkyPilot autostop.** `--idle-minutes-to-autostop 30 --down` tells SkyPilot itself to terminate the cluster if the whole job finishes and nothing takes its place.
 4. **Monthly budget check.** `scripts/budget-check.sh` is cron-able on your laptop; it reads `sky cost-report` and runs `sky down` if you've spent over `$MONTHLY_BUDGET_USD` this month.
@@ -75,7 +76,7 @@ Non-optional. Go to <https://www.runpod.io/console/user/billing> and cap monthly
 make up
 ```
 
-First launch takes ~5 minutes (provisioning + image pull + model download). Subsequent launches are faster if you've configured an HF cache bucket (see [Bigger models](#bigger-models)).
+First launch takes ~5 minutes (provisioning + image pull + model download). Subsequent cold launches re-pay the model download unless you've configured an HF cache bucket (see [Bigger models](#bigger-models)). The `vllm/vllm-openai` image is ~10 GB — first pull is slow, cached thereafter by RunPod.
 
 ### 6. Use it
 
@@ -110,7 +111,7 @@ If you forget, the safeguards kick in. But `make down` is instant and saves you 
 | `make up` | Launch GPU + start serving (override preset: `YAML=sky-big.yaml make up`) |
 | `make down` | Terminate cluster |
 | `make status` | Is it running? |
-| `make logs` | Tail llama-server logs |
+| `make logs` | Tail vLLM + cloudflared logs |
 | `make health` | Hit the public URL and confirm it responds |
 | `make cost` | SkyPilot's running cost report |
 | `make budget` | Run the budget guard once (also cron-able) |
@@ -118,14 +119,14 @@ If you forget, the safeguards kick in. But `make down` is instant and saves you 
 
 ## Bigger models
 
-The default `LLM_HF_REPO` is a 230 MB toy model — fine for testing the pipeline, useless for real work. To try something bigger, edit `.env`:
+The default `LLM_MODEL` is a 0.5B toy model — fine for testing the pipeline, useless for real work. To try something bigger, edit `.env`:
 
 ```ini
-LLM_HF_REPO=ggml-org/Qwen2.5-7B-Instruct-GGUF
-LLM_HF_FILE=qwen2.5-7b-instruct-q4_k_m.gguf
+LLM_MODEL=Qwen/Qwen2.5-7B-Instruct
+# Or: meta-llama/Llama-3.1-8B-Instruct, mistralai/Mistral-7B-Instruct-v0.3, etc.
 ```
 
-`make down && make up` to apply.
+Any HuggingFace repo ID vLLM supports works. Gated models (Llama, Gemma, Mistral-Instruct, etc.) need `HF_TOKEN=...` in `.env`. `make down && make up` to apply.
 
 **If the model is > a few GB**, the re-download on every launch gets annoying. Add an HF cache bucket:
 
@@ -140,6 +141,18 @@ LLM_HF_FILE=qwen2.5-7b-instruct-q4_k_m.gguf
    ```
 3. First launch caches the download into the bucket; subsequent launches mount the bucket and skip the download.
 
+### Engine presets
+
+Three sibling YAMLs pick the engine + GPU tier. Default is vLLM on the 24 GB tier. Switch via `YAML=...`:
+
+| YAML | Engine | GPU tier | Model config key | Use when |
+|---|---|---|---|---|
+| `sky.yaml` (default) | vLLM | 24 GB | `LLM_MODEL` (HF repo ID) | Most cases. Fast throughput, day-0 HF models. |
+| `sky-big.yaml` | vLLM | 48–80 GB | `LLM_MODEL` | Bigger model than fits on 24 GB. |
+| `sky-llamacpp.yaml` | llama.cpp | 24 GB | `LLM_HF_REPO` + `LLM_HF_FILE` (GGUF) | GGUF-specific quants, config parity with a local `llama-router`, or when you want `llama-server` features vLLM lacks. |
+
+`sky-llamacpp.yaml` pays a ~10–15 min cold-start penalty (CUDA toolkit apt-install + source build). See `docs/alternatives.md` for why we don't pin a custom Docker image on RunPod.
+
 ### Scaling up to bigger GPUs
 
 `sky.yaml` targets the 24 GB tier (RTX 3090/4090/A5000/A6000/L40S) — fine for models up to ~14B at Q4 or ~7B at Q8. For bigger models, there's `sky-big.yaml` which targets the **48–80 GB tier** (A6000, L40S, A100, A100-80GB, H100):
@@ -153,26 +166,17 @@ YAML=sky-big.yaml make up
 
 Rough fit table:
 
-| Tier | GPU options | Models that fit | ~$/hr |
-|---|---|---|---|
-| `sky.yaml` (24 GB) | 3090/4090/A5000/A6000/L40S | ≤14B at Q4, 7B at Q8, 30B MoE w/ CPU offload | 0.35–1.00 |
-| `sky-big.yaml` (48–80 GB) | A6000/L40S/A100/A100-80GB/H100 | ≤70B at Q4, ≤30B at Q8, big MoEs fully on GPU | 1.00–4.00 |
-| (future multi-GPU) | A100-80GB:2, H100:2–4 | 70B at Q8, 120B+ at Q4, DeepSeek-V3 | 4.00–20.00 |
+All prices are for RunPod Secure Cloud (SkyPilot's RunPod catalog [is Secure-Cloud-only by design](https://github.com/skypilot-org/skypilot/blob/master/sky/catalog/data_fetchers/fetch_runpod.py#L576-L578), so there's no "random host with root" in the data path — just RunPod itself).
 
-**Multi-GPU** is a one-line diff when you need it: change `accelerators: A100-80GB:1` to `:2`, and add `-ts auto` (or omit — llama.cpp auto-splits with `-ngl 99`). For vLLM it's `--tensor-parallel-size N`. No other scaffold changes.
+| Tier | GPU options | Models that fit (vLLM) | ~$/hr |
+|---|---|---|---|
+| `sky.yaml` (24 GB) | 3090/4090/A5000/A6000/L40S | ≤8B FP16, ≤13B FP8/AWQ/GPTQ | 0.50–1.20 |
+| `sky-big.yaml` (48–80 GB) | A6000/L40S/A100/A100-80GB/H100 | ≤70B FP8, ≤34B FP16 | 1.20–4.50 |
+| (future multi-GPU) | A100-80GB:2, H100:2–4 | 70B FP16, 120B+ FP8, DeepSeek-V3 | 4.50–20.00 |
+
+**Multi-GPU** is a one-line diff when you need it: change `accelerators: A100-80GB:1` to `:2` and add `--tensor-parallel-size 2` to the `python -m vllm.entrypoints.openai.api_server` invocation. No other scaffold changes.
 
 **Multi-node** (8+ GPUs across boxes) is out of scope — rarely needed since even 405B models fit on a single 4× or 8× H100 box.
-
-## Hot-swapping multiple models (v1.5)
-
-`models.ini` is a placeholder for llama.cpp's router mode, which keeps several models ready and loads them on demand. To enable:
-
-1. Confirm the `ghcr.io/ggml-org/llama.cpp:server-cuda` image supports `--models-preset` (it should — run `docker run --rm ghcr.io/ggml-org/llama.cpp:server-cuda --help | grep models-preset`).
-2. Mount `models.ini` into the container (add to `sky.yaml`'s `docker run`: `-v $PWD/models.ini:/models.ini:ro`).
-3. Replace `--hf-repo ... --hf-file ...` with `--models-preset /models.ini`.
-4. Clients pick the model via the `"model"` field in their request.
-
-See `~/CodingProjects/llama-router/` (if you have it) for a working reference of this pattern tuned for a local 3060.
 
 ## Multi-provider (unlock if you want)
 
@@ -215,13 +219,13 @@ skypilot-llms/
 ├── .gitignore
 ├── Makefile           # up / down / status / logs / health / cost / budget
 ├── README.md          # you are here
-├── sky.yaml           # SkyPilot task — 24 GB tier (default)
-├── sky-big.yaml       # SkyPilot task — 48–80 GB tier (YAML=sky-big.yaml make up)
-├── models.ini         # reference for router-mode (v1.5)
+├── sky.yaml           # SkyPilot task — vLLM, 24 GB tier (default)
+├── sky-big.yaml       # SkyPilot task — vLLM, 48–80 GB tier (YAML=sky-big.yaml make up)
+├── sky-llamacpp.yaml  # SkyPilot task — llama.cpp, 24 GB tier (YAML=sky-llamacpp.yaml make up)
 ├── docs/
-│   └── alternatives.md   # why not SkyServe / dstack / etc.
+│   └── alternatives.md   # why not SkyServe / dstack / llama.cpp
 ├── scripts/
-│   ├── idle-watch.sh    # exits the run block when llama-server is idle
+│   ├── idle-watch.sh    # exits the run block when vLLM is idle
 │   └── budget-check.sh  # cron-able spend guard
 └── caddy/
     └── Caddyfile.placeholder  # v2 FRP migration stub

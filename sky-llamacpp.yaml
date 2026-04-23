@@ -1,0 +1,119 @@
+name: llm
+
+# Alternative engine preset: llama.cpp + llama-server (GGUF models).
+# Same shape as sky.yaml (vLLM is default) but builds llama.cpp from source
+# in setup — gives you native GGUF support, --metrics Prometheus endpoint,
+# and full parity with the owner's local `llama-router` config.
+#
+# Usage:
+#   YAML=sky-llamacpp.yaml make up
+#
+# Cold-start time: ~10–15 min (CUDA toolkit apt-install + compile). That's
+# the tradeoff for pinning to a stock image that ships sshd — see
+# docs/alternatives.md "Why vLLM and not llama.cpp" for the sshd trap we
+# avoid this way.
+
+envs:
+  LLM_HOSTNAME: ""
+  CF_TUNNEL_TOKEN: ""
+  LLM_API_KEY: ""
+  # llama.cpp loads GGUF files — set both the HF repo and the file name.
+  LLM_HF_REPO: ggml-org/SmolLM2-360M-Instruct-GGUF
+  LLM_HF_FILE: SmolLM2-360M-Instruct-Q8_0.gguf
+  HF_TOKEN: ""
+  IDLE_MINUTES: "15"
+  MAX_RUNTIME_MINUTES: "240"
+  # idle-watch.sh reads this to know which Prometheus counter to poll.
+  IDLE_METRIC: "llamacpp:n_tokens_predicted_total"
+
+resources:
+  cloud: runpod
+  # No image_id — default runpod/base has sshd. vllm/ggml app images don't,
+  # so we can't pin to them on RunPod (pods are containers, not VMs).
+  accelerators: {RTX4090:1, RTX3090:1, RTXA5000:1, RTXA6000:1, L40S:1}
+  disk_size: 100
+  ports: 8080
+
+workdir: .
+
+setup: |
+  set -e
+
+  # Install NVIDIA CUDA toolkit via their apt repo (runpod/base has the
+  # driver shim but not nvcc / cuda headers).
+  if ! command -v nvcc >/dev/null; then
+    sudo apt-get update -qq
+    sudo apt-get install -y -qq wget ca-certificates
+    wget -qO /tmp/cuda-keyring.deb https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb
+    sudo dpkg -i /tmp/cuda-keyring.deb
+    sudo apt-get update -qq
+    sudo apt-get install -y -qq cuda-toolkit-12-8
+  fi
+
+  # Build prereqs
+  sudo apt-get install -y -qq build-essential cmake git libcurl4-openssl-dev
+
+  # Build llama.cpp with CUDA + libcurl (for --hf-repo downloads).
+  # Detect the assigned GPU's compute capability and target only that arch —
+  # by default llama.cpp compiles every CUDA kernel for 6+ architectures,
+  # which takes ~30 min. Single-arch build is ~3–5 min.
+  LLAMA_DIR=/opt/llama.cpp
+  if [ ! -x "$LLAMA_DIR/build/bin/llama-server" ]; then
+    sudo mkdir -p "$LLAMA_DIR" && sudo chown "$USER" "$LLAMA_DIR"
+    if [ ! -d "$LLAMA_DIR/.git" ]; then
+      git clone --depth=1 https://github.com/ggml-org/llama.cpp "$LLAMA_DIR"
+    fi
+    cd "$LLAMA_DIR"
+    export PATH=/usr/local/cuda-12.8/bin:$PATH
+    CUDA_ARCH=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d '.')
+    [ -z "$CUDA_ARCH" ] && CUDA_ARCH="86;89"  # fallback covering 3090/4090/A5000/A6000/L40S
+    echo "Building llama.cpp for CUDA_ARCHITECTURES=$CUDA_ARCH"
+    cmake -B build -DGGML_CUDA=ON -DLLAMA_CURL=ON -DCMAKE_CUDA_ARCHITECTURES="$CUDA_ARCH"
+    cmake --build build --config Release -j"$(nproc)" --target llama-server
+  fi
+  sudo ln -sf "$LLAMA_DIR/build/bin/llama-server" /usr/local/bin/llama-server
+
+  # cloudflared
+  if ! command -v cloudflared >/dev/null; then
+    sudo curl -fL -o /usr/local/bin/cloudflared \
+      https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+    sudo chmod +x /usr/local/bin/cloudflared
+  fi
+
+run: |
+  set -e
+
+  sudo shutdown -h +${MAX_RUNTIME_MINUTES} "skypilot-llms wall-clock cap" 2>/dev/null &
+
+  : "${LLM_HOSTNAME:?LLM_HOSTNAME is required — set it in .env}"
+  : "${CF_TUNNEL_TOKEN:?CF_TUNNEL_TOKEN is required — set it in .env}"
+  : "${LLM_API_KEY:?LLM_API_KEY is required — set it in .env}"
+
+  mkdir -p ~/.skypilot-llms-logs
+
+  pkill -f 'llama-server' 2>/dev/null || true
+  nohup llama-server \
+    --hf-repo "${LLM_HF_REPO}" \
+    --hf-file "${LLM_HF_FILE}" \
+    --api-key "${LLM_API_KEY}" \
+    --host 0.0.0.0 --port 8080 \
+    --metrics \
+    -ngl 99 \
+    > ~/.skypilot-llms-logs/llama-server.log 2>&1 &
+
+  echo "Waiting for llama-server to become healthy..."
+  for i in $(seq 1 240); do
+    if curl -sf http://localhost:8080/health >/dev/null 2>&1; then
+      echo "llama-server is ready"
+      break
+    fi
+    sleep 5
+  done
+
+  pkill -f 'cloudflared' 2>/dev/null || true
+  nohup cloudflared tunnel --no-autoupdate run --token "${CF_TUNNEL_TOKEN}" \
+    > ~/.skypilot-llms-logs/cloudflared.log 2>&1 &
+
+  echo "Tunnel up: https://${LLM_HOSTNAME}/v1"
+
+  bash scripts/idle-watch.sh

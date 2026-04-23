@@ -1,4 +1,4 @@
-CLUSTER  ?= llm-cpp
+CLUSTER  ?= llm
 ENV_FILE ?= .env
 YAML     ?= sky.yaml
 
@@ -13,7 +13,7 @@ endif
 help: ## Show this help
 	@awk 'BEGIN {FS = ":.*##"; printf "Targets:\n"} /^[a-zA-Z_-]+:.*##/ { printf "  %-10s %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
 
-up: $(ENV_FILE)  ## Launch the GPU cluster and start llama.cpp + tunnel (override: YAML=sky-big.yaml)
+up: $(ENV_FILE)  ## Launch the GPU cluster and start vLLM + tunnel (override: YAML=sky-big.yaml)
 	sky launch -c $(CLUSTER) -y $(YAML) --env-file $(ENV_FILE) \
 		--idle-minutes-to-autostop 30 --down
 
@@ -23,7 +23,7 @@ down:  ## Terminate the cluster (stops billing)
 status:  ## Show cluster status
 	sky status $(CLUSTER)
 
-logs:  ## Tail llama-server + cloudflared logs from the cluster
+logs:  ## Tail vLLM + cloudflared logs from the cluster
 	sky logs $(CLUSTER)
 
 health:  ## Hit the public endpoint and check it's alive

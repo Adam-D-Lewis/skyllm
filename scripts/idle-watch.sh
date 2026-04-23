@@ -1,13 +1,18 @@
 #!/usr/bin/env bash
-# Exit 0 after $IDLE_MINUTES with no llama-server activity.
-# Activity = llama-server's Prometheus counter of predicted tokens advancing.
+# Exit 0 after $IDLE_MINUTES with no vLLM activity.
+# Activity = vLLM's Prometheus counter of generated tokens advancing.
 # When this script exits, the SkyPilot run block finishes; combined with
 # `sky launch --idle-minutes-to-autostop N --down`, the cluster terminates.
 set -euo pipefail
 
 : "${IDLE_MINUTES:=15}"
 
-METRIC="llamacpp:n_tokens_predicted_total"
+# Prometheus counter to poll on /metrics to detect activity. Default is
+# vLLM's; the llama.cpp preset overrides this via IDLE_METRIC in its YAML.
+#   vLLM:       vllm:generation_tokens_total
+#   llama.cpp:  llamacpp:n_tokens_predicted_total
+: "${IDLE_METRIC:=vllm:generation_tokens_total}"
+METRIC="$IDLE_METRIC"
 POLL_SECONDS=60
 IDLE_SECONDS=$((IDLE_MINUTES * 60))
 

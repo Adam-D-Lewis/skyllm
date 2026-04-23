@@ -1,4 +1,4 @@
-name: llm-cpp
+name: llm
 
 # All user-specific values come from .env (via `--env-file .env` on launch).
 # See .env.example for what to set.
@@ -6,17 +6,21 @@ envs:
   LLM_HOSTNAME: ""
   CF_TUNNEL_TOKEN: ""
   LLM_API_KEY: ""
-  LLM_HF_REPO: ggml-org/SmolLM2-360M-Instruct-GGUF
-  LLM_HF_FILE: SmolLM2-360M-Instruct-Q8_0.gguf
+  # HuggingFace repo ID of the model vLLM should load. Default is tiny so the
+  # stack gets tested in seconds.
+  LLM_MODEL: Qwen/Qwen2.5-0.5B-Instruct
   HF_TOKEN: ""
   IDLE_MINUTES: "15"
   MAX_RUNTIME_MINUTES: "240"
 
 resources:
   cloud: runpod
-  # RunPod-available GPUs with >=24 GB VRAM. SkyPilot picks the cheapest
-  # currently available. To widen to other providers later, remove `cloud:`
-  # and add A10G/L4 etc. — see README "Multi-provider".
+  # No image_id — we let SkyPilot use the provider's default (on RunPod:
+  # runpod/base:1.0.2-ubuntu2204), which ships sshd. Trying to pin to
+  # vllm/vllm-openai directly fails on RunPod because that image doesn't run
+  # sshd and RunPod pods *are* containers, so SkyPilot can't bootstrap in.
+  # This matches SkyPilot's canonical Llama-3 example pattern.
+  # RunPod-available 24 GB GPUs. SkyPilot picks the cheapest available.
   accelerators: {RTX4090:1, RTX3090:1, RTXA5000:1, RTXA6000:1, L40S:1}
   disk_size: 100
   ports: 8080
@@ -25,55 +29,64 @@ workdir: .
 
 setup: |
   set -e
-  # Pull container images ahead of time so `run:` is fast
-  docker pull ghcr.io/ggml-org/llama.cpp:server-cuda
-  docker pull cloudflare/cloudflared:latest
+  # SkyPilot's RunPod bootstrap installs conda into ~/miniconda3. Create a
+  # dedicated vllm env inside it. This matches SkyPilot's Llama-3 example.
+  source ~/miniconda3/etc/profile.d/conda.sh
+  conda activate vllm 2>/dev/null || {
+    conda create -n vllm python=3.11 -y
+    conda activate vllm
+  }
+  pip install --upgrade pip
+  pip install vllm
+
+  # cloudflared is a single static Go binary
+  if ! command -v cloudflared >/dev/null; then
+    curl -fL -o /usr/local/bin/cloudflared \
+      https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+    chmod +x /usr/local/bin/cloudflared
+  fi
 
 run: |
   set -e
 
-  # Wall-clock safety net: force shutdown after MAX_RUNTIME_MINUTES no matter what.
-  # Protects against a wedged idle-watcher leaving the GPU running overnight.
-  sudo shutdown -h +${MAX_RUNTIME_MINUTES} "skypilot-llms wall-clock cap" &
+  # Wall-clock safety net: force shutdown after MAX_RUNTIME_MINUTES no matter
+  # what. Protects against a wedged idle-watcher leaving the GPU running
+  # overnight.
+  shutdown -h +${MAX_RUNTIME_MINUTES} "skypilot-llms wall-clock cap" 2>/dev/null &
 
   # Fail fast on missing required config
   : "${LLM_HOSTNAME:?LLM_HOSTNAME is required — set it in .env}"
   : "${CF_TUNNEL_TOKEN:?CF_TUNNEL_TOKEN is required — set it in .env}"
   : "${LLM_API_KEY:?LLM_API_KEY is required — set it in .env}"
 
-  # Start llama.cpp server
-  docker rm -f llama-server 2>/dev/null || true
-  docker run -d --name llama-server \
-    --gpus all \
-    --network host \
-    --restart unless-stopped \
-    -v "$HOME/.cache/huggingface:/root/.cache/huggingface" \
-    -e HF_TOKEN="${HF_TOKEN}" \
-    ghcr.io/ggml-org/llama.cpp:server-cuda \
-      --hf-repo "${LLM_HF_REPO}" \
-      --hf-file "${LLM_HF_FILE}" \
-      --api-key "${LLM_API_KEY}" \
-      --host 0.0.0.0 --port 8080 \
-      --metrics \
-      -ngl 99
+  mkdir -p ~/.skypilot-llms-logs
+  source ~/miniconda3/etc/profile.d/conda.sh
+  conda activate vllm
 
-  # Wait for llama-server to be ready (model download can take a minute)
-  echo "Waiting for llama-server to become healthy..."
-  for i in $(seq 1 120); do
+  # Start vLLM OpenAI-compatible server. --api-key enforces
+  # `Authorization: Bearer <key>` on every request. HF_TOKEN is read from the
+  # env for gated models.
+  pkill -f 'vllm.entrypoints' 2>/dev/null || true
+  nohup python -m vllm.entrypoints.openai.api_server \
+    --model "${LLM_MODEL}" \
+    --api-key "${LLM_API_KEY}" \
+    --host 0.0.0.0 --port 8080 \
+    > ~/.skypilot-llms-logs/vllm.log 2>&1 &
+
+  # Wait for vLLM to be ready. Model download + CUDA init can take minutes.
+  echo "Waiting for vLLM to become healthy..."
+  for i in $(seq 1 240); do
     if curl -sf http://localhost:8080/health >/dev/null 2>&1; then
-      echo "llama-server is ready"
+      echo "vLLM is ready"
       break
     fi
     sleep 5
   done
 
-  # Start Cloudflare Tunnel
-  docker rm -f cloudflared 2>/dev/null || true
-  docker run -d --name cloudflared \
-    --network host \
-    --restart unless-stopped \
-    cloudflare/cloudflared:latest \
-      tunnel --no-autoupdate run --token "${CF_TUNNEL_TOKEN}"
+  # Cloudflare Tunnel
+  pkill -f 'cloudflared' 2>/dev/null || true
+  nohup cloudflared tunnel --no-autoupdate run --token "${CF_TUNNEL_TOKEN}" \
+    > ~/.skypilot-llms-logs/cloudflared.log 2>&1 &
 
   echo "Tunnel up: https://${LLM_HOSTNAME}/v1"
   echo "Test:  curl https://${LLM_HOSTNAME}/v1/models -H 'Authorization: Bearer \$LLM_API_KEY'"
