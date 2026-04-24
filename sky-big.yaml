@@ -36,13 +36,13 @@ workdir: .
 
 setup: |
   set -e
-  source ~/miniconda3/etc/profile.d/conda.sh
-  conda activate vllm 2>/dev/null || {
-    conda create -n vllm python=3.11 -y
-    conda activate vllm
-  }
-  pip install --upgrade pip
-  pip install vllm
+  # Install pixi + the vllm env from the committed pixi.toml/lock.
+  # Same shape as sky.yaml — see docs/pixi.md for the reasoning.
+  if ! command -v pixi >/dev/null 2>&1 && [ ! -x "$HOME/.pixi/bin/pixi" ]; then
+    curl -fsSL https://pixi.sh/install.sh | bash
+  fi
+  export PATH="$HOME/.pixi/bin:$PATH"
+  pixi install -e vllm
 
   if ! command -v cloudflared >/dev/null; then
     curl -fL -o /usr/local/bin/cloudflared \
@@ -60,11 +60,13 @@ run: |
   : "${LLM_API_KEY:?LLM_API_KEY is required — set it in .env}"
 
   mkdir -p ~/.skypilot-llms-logs
-  source ~/miniconda3/etc/profile.d/conda.sh
-  conda activate vllm
+  export PATH="$HOME/.pixi/bin:$PATH"
 
+  # Direct env-python invoke + LD_PRELOAD env's libstdc++ — see docs/pixi.md.
+  VLLM_ENV="$HOME/sky_workdir/.pixi/envs/vllm"
   pkill -f 'vllm.entrypoints' 2>/dev/null || true
-  nohup python -m vllm.entrypoints.openai.api_server \
+  LD_PRELOAD="$VLLM_ENV/lib/libstdc++.so.6" nohup "$VLLM_ENV/bin/python" \
+    -m vllm.entrypoints.openai.api_server \
     --model "${LLM_MODEL}" \
     --api-key "${LLM_API_KEY}" \
     --host 0.0.0.0 --port 8080 \

@@ -45,15 +45,18 @@ workdir: .
 # Use it for installs and anything idempotent. Failures here abort the launch.
 setup: |
   set -e
-  # SkyPilot's RunPod bootstrap installs conda into ~/miniconda3. Create a
-  # dedicated vllm env inside it. This matches SkyPilot's Llama-3 example.
-  source ~/miniconda3/etc/profile.d/conda.sh
-  conda activate vllm 2>/dev/null || {
-    conda create -n vllm python=3.11 -y
-    conda activate vllm
-  }
-  pip install --upgrade pip
-  pip install vllm
+  # Install pixi (single static Rust binary, ~30 MB, unprivileged install).
+  if ! command -v pixi >/dev/null 2>&1 && [ ! -x "$HOME/.pixi/bin/pixi" ]; then
+    curl -fsSL https://pixi.sh/install.sh | bash
+  fi
+  export PATH="$HOME/.pixi/bin:$PATH"
+
+  # Resolve + install the `vllm` environment from the committed pixi.toml /
+  # pixi.lock. vllm's pypi wheel pulls torch==2.10.0+cu128 as a transitive;
+  # pypi's torch is CUDA-enabled. cuda-toolkit from conda-forge provides
+  # CUDA_HOME so any sdist fallback succeeds. See docs/pixi.md for why this
+  # specific shape — we hit several dead ends before landing here.
+  pixi install -e vllm
 
   # cloudflared is a single static Go binary
   if ! command -v cloudflared >/dev/null; then
@@ -79,14 +82,22 @@ run: |
   : "${LLM_API_KEY:?LLM_API_KEY is required — set it in .env}"
 
   mkdir -p ~/.skypilot-llms-logs
-  source ~/miniconda3/etc/profile.d/conda.sh
-  conda activate vllm
+  export PATH="$HOME/.pixi/bin:$PATH"
 
   # Start vLLM OpenAI-compatible server. --api-key enforces
   # `Authorization: Bearer <key>` on every request. HF_TOKEN is read from the
   # env for gated models.
+  # Two non-obvious bits (see docs/pixi.md for the full story):
+  #  1. Invoke the env's python directly; `pixi run` doesn't set
+  #     LD_LIBRARY_PATH and some RunPod pods load system libstdc++ first.
+  #  2. LD_PRELOAD the env's libstdc++.so.6 so any C extension imported
+  #     before _sqlite3 (e.g. torch, xgrammar) doesn't pin the older
+  #     system libstdc++ — which would then break libicui18n's need for
+  #     CXXABI_1.3.15 when sqlite3 loads.
+  VLLM_ENV="$HOME/sky_workdir/.pixi/envs/vllm"
   pkill -f 'vllm.entrypoints' 2>/dev/null || true
-  nohup python -m vllm.entrypoints.openai.api_server \
+  LD_PRELOAD="$VLLM_ENV/lib/libstdc++.so.6" nohup "$VLLM_ENV/bin/python" \
+    -m vllm.entrypoints.openai.api_server \
     --model "${LLM_MODEL}" \
     --api-key "${LLM_API_KEY}" \
     --host 0.0.0.0 --port 8080 \

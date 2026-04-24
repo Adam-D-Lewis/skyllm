@@ -2,10 +2,15 @@ CLUSTER  ?= llm
 ENV_FILE ?= .env
 YAML     ?= sky.yaml
 
-# Source .env so $(LLM_HOSTNAME) etc. are available to recipes
+# Source .env so $(LLM_HOSTNAME) etc. are available to recipes. Make's
+# `include` keeps surrounding quotes as part of the value — SkyPilot's
+# --env-file parser strips them. Normalize here so both agree. (Affects
+# LLM_HOSTNAME / LLM_API_KEY used by `health`.)
 ifneq (,$(wildcard $(ENV_FILE)))
 include $(ENV_FILE)
 export
+LLM_HOSTNAME := $(patsubst "%",%,$(patsubst '%',%,$(LLM_HOSTNAME)))
+LLM_API_KEY  := $(patsubst "%",%,$(patsubst '%',%,$(LLM_API_KEY)))
 endif
 
 .PHONY: help up down status logs health cost check budget

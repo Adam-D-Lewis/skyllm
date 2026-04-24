@@ -1,25 +1,28 @@
 name: llm
 
 # Alternative engine preset: llama.cpp + llama-server (GGUF models).
-# Same shape as sky.yaml (vLLM is default) but builds llama.cpp from source
-# in setup — gives you native GGUF support, --metrics Prometheus endpoint,
-# and full parity with the owner's local `llama-router` config.
+# Same shape as sky.yaml (vLLM is default) but uses the conda-forge
+# `llama.cpp` package (cuda129 build) installed via pixi. Gives you native
+# GGUF support, --metrics Prometheus endpoint, and parity with the owner's
+# local `llama-router` config.
 #
 # Usage:
 #   YAML=sky-llamacpp.yaml make up
 #
-# Cold-start time: ~10–15 min (CUDA toolkit apt-install + compile). That's
-# the tradeoff for pinning to a stock image that ships sshd — see
-# docs/alternatives.md "Why vLLM and not llama.cpp" for the sshd trap we
-# avoid this way.
+# Cold-start time: ~1–2 min (pixi install of a prebuilt binary). The old
+# source-build path was ~10–15 min — conda-forge adding a linux-64 CUDA
+# variant of llama.cpp let us delete it. See docs/pixi.md.
 
 envs:
   LLM_HOSTNAME: ""
   CF_TUNNEL_TOKEN: ""
   LLM_API_KEY: ""
   # llama.cpp loads GGUF files — set both the HF repo and the file name.
-  LLM_HF_REPO: ggml-org/SmolLM2-360M-Instruct-GGUF
-  LLM_HF_FILE: SmolLM2-360M-Instruct-Q8_0.gguf
+  # Default is a tiny Qwen2.5-0.5B Q4_K_M — parallel to sky.yaml's vLLM
+  # default, fast stack-test model. The earlier `ggml-org/SmolLM2-*-GGUF`
+  # default stopped being publicly downloadable in 2026.
+  LLM_HF_REPO: Qwen/Qwen2.5-0.5B-Instruct-GGUF
+  LLM_HF_FILE: qwen2.5-0.5b-instruct-q4_k_m.gguf
   HF_TOKEN: ""
   IDLE_MINUTES: "15"
   MAX_RUNTIME_MINUTES: "240"
@@ -38,42 +41,16 @@ workdir: .
 
 setup: |
   set -e
-
-  # Install NVIDIA CUDA toolkit via their apt repo (runpod/base has the
-  # driver shim but not nvcc / cuda headers).
-  if ! command -v nvcc >/dev/null; then
-    sudo apt-get update -qq
-    sudo apt-get install -y -qq wget ca-certificates
-    wget -qO /tmp/cuda-keyring.deb https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb
-    sudo dpkg -i /tmp/cuda-keyring.deb
-    sudo apt-get update -qq
-    sudo apt-get install -y -qq cuda-toolkit-12-8
+  # Install pixi + the llamacpp env from the committed pixi.toml/lock.
+  # conda-forge's `llama.cpp=*=cuda129*` ships a prebuilt binary with CUDA
+  # runtime bundled; works on driver 570+ (empirically verified on RunPod).
+  if ! command -v pixi >/dev/null 2>&1 && [ ! -x "$HOME/.pixi/bin/pixi" ]; then
+    curl -fsSL https://pixi.sh/install.sh | bash
   fi
+  export PATH="$HOME/.pixi/bin:$PATH"
+  pixi install -e llamacpp
 
-  # Build prereqs
-  sudo apt-get install -y -qq build-essential cmake git libcurl4-openssl-dev
-
-  # Build llama.cpp with CUDA + libcurl (for --hf-repo downloads).
-  # Detect the assigned GPU's compute capability and target only that arch —
-  # by default llama.cpp compiles every CUDA kernel for 6+ architectures,
-  # which takes ~30 min. Single-arch build is ~3–5 min.
-  LLAMA_DIR=/opt/llama.cpp
-  if [ ! -x "$LLAMA_DIR/build/bin/llama-server" ]; then
-    sudo mkdir -p "$LLAMA_DIR" && sudo chown "$USER" "$LLAMA_DIR"
-    if [ ! -d "$LLAMA_DIR/.git" ]; then
-      git clone --depth=1 https://github.com/ggml-org/llama.cpp "$LLAMA_DIR"
-    fi
-    cd "$LLAMA_DIR"
-    export PATH=/usr/local/cuda-12.8/bin:$PATH
-    CUDA_ARCH=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d '.')
-    [ -z "$CUDA_ARCH" ] && CUDA_ARCH="86;89"  # fallback covering 3090/4090/A5000/A6000/L40S
-    echo "Building llama.cpp for CUDA_ARCHITECTURES=$CUDA_ARCH"
-    cmake -B build -DGGML_CUDA=ON -DLLAMA_CURL=ON -DCMAKE_CUDA_ARCHITECTURES="$CUDA_ARCH"
-    cmake --build build --config Release -j"$(nproc)" --target llama-server
-  fi
-  sudo ln -sf "$LLAMA_DIR/build/bin/llama-server" /usr/local/bin/llama-server
-
-  # cloudflared
+  # cloudflared is a single static Go binary
   if ! command -v cloudflared >/dev/null; then
     sudo curl -fL -o /usr/local/bin/cloudflared \
       https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
@@ -90,9 +67,14 @@ run: |
   : "${LLM_API_KEY:?LLM_API_KEY is required — set it in .env}"
 
   mkdir -p ~/.skypilot-llms-logs
+  export PATH="$HOME/.pixi/bin:$PATH"
 
+  # Direct env-binary invoke + LD_PRELOAD env's libstdc++ — see docs/pixi.md.
+  # llama-server is a C++ binary (not python) so the libstdc++ pin issue is
+  # less likely to apply, but keeping it for consistency — cheap insurance.
+  LLAMA_ENV="$HOME/sky_workdir/.pixi/envs/llamacpp"
   pkill -f 'llama-server' 2>/dev/null || true
-  nohup llama-server \
+  LD_PRELOAD="$LLAMA_ENV/lib/libstdc++.so.6" nohup "$LLAMA_ENV/bin/llama-server" \
     --hf-repo "${LLM_HF_REPO}" \
     --hf-file "${LLM_HF_FILE}" \
     --api-key "${LLM_API_KEY}" \
