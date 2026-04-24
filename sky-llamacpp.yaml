@@ -34,7 +34,8 @@ resources:
   # No image_id — default runpod/base has sshd. vllm/ggml app images don't,
   # so we can't pin to them on RunPod (pods are containers, not VMs).
   accelerators: {RTX4090:1, RTX3090:1, RTXA5000:1, RTXA6000:1, L40S:1}
-  disk_size: 100
+  memory: 16+
+  disk_size: 32
   ports: 8080
 
 workdir: .

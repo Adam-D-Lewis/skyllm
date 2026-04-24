@@ -28,8 +28,9 @@ resources:
   # RunPod). Default runpod/base has sshd; we pip install vllm in setup.
   # 48–80 GB tier. SkyPilot picks the cheapest available at launch.
   accelerators: {A6000:1, L40S:1, A100-80GB:1, A100:1, H100:1}
+  memory: 16+
   # Bigger disk for bigger models — 70B FP8 is ~40 GB, 120B FP8 is ~70 GB.
-  disk_size: 250
+  disk_size: 150
   ports: 8080
 
 workdir: .

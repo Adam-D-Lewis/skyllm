@@ -34,7 +34,8 @@ resources:
   # This matches SkyPilot's canonical Llama-3 example pattern.
   # RunPod-available 24 GB GPUs. SkyPilot picks the cheapest available.
   accelerators: {RTX4090:1, RTX3090:1, RTXA5000:1, RTXA6000:1, L40S:1}
-  disk_size: 100
+  memory: 16+
+  disk_size: 48
   ports: 8080
 
 # Local directory rsynced to the remote node at ~/sky_workdir. `.` means this

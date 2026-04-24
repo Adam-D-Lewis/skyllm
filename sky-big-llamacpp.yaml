@@ -31,9 +31,10 @@ resources:
   # default model's 131k context + q8_0 KV cache; A6000/L40S work only at
   # reduced context. SkyPilot picks cheapest available at launch.
   accelerators: {A6000:1, L40S:1, A100-80GB:1, A100:1, H100:1}
+  memory: 16+
   # Bigger disk for bigger GGUFs — MXFP4 MoE Qwen3-Coder-Next is ~48 GB,
   # plus HF cache overhead.
-  disk_size: 250
+  disk_size: 128
   ports: 8080
 
 workdir: .
