@@ -1,4 +1,4 @@
-# skypilot-llms
+# skyllm
 
 Cheap, on-demand cloud GPU running an OpenAI-compatible vLLM endpoint, reachable from any tool via a stable public URL.
 
