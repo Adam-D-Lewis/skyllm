@@ -37,7 +37,10 @@ resources:
   # so we can't pin to them on RunPod (pods are containers, not VMs).
   accelerators: {RTX4090:1, RTX3090:1, RTXA5000:1, RTXA6000:1, L40S:1}
   memory: 16+
-  disk_size: 32
+  # 64 GB holds a ~17 GB Q4_K_M GGUF (e.g. Qwen3.6-27B) plus HF staging +
+  # base image. The original 32 GB was sized for the ~0.4 GB stack-test
+  # default only.
+  disk_size: 64
   ports: 8080
 
 # See sky.yaml for why this is an explicit allowlist instead of `workdir: .`
@@ -81,24 +84,35 @@ run: |
   # llama-server is a C++ binary (not python) so the libstdc++ pin issue is
   # less likely to apply, but keeping it for consistency — cheap insurance.
   #
-  # --hf-repo/--hf-file caveat: llama.cpp b8722's built-in downloader
-  # (`common_pull_file`) fails on multi-GB files that HuggingFace serves via
-  # Xet storage — see issue ggml-org/llama.cpp#21280. Small GGUFs (a few GB
-  # and under, still on classic LFS) work; big ones hit status:-1 and retry
-  # forever. If a future catalog entry targets this preset with a big GGUF
-  # and hangs in the download loop, port the `hf download --format quiet`
-  # pre-fetch pattern from sky/sky-llamacpp-cpumoe.yaml (call `hf` from
-  # $LLAMA_ENV/bin/ and pass `-m <path>` to llama-server instead of
-  # --hf-repo/--hf-file).
+  # Pre-download via `hf` instead of llama.cpp's built-in --hf-repo/--hf-file
+  # downloader: `common_pull_file` fails with status:-1 on multi-GB files
+  # served via HuggingFace's Xet storage (issue ggml-org/llama.cpp#21280).
+  # Same workaround as sky/sky-llamacpp-cpumoe.yaml and sky-llamacpp-80gb.yaml.
   LLAMA_ENV="$HOME/sky_workdir/.pixi/envs/llamacpp"
+
+  echo "Downloading ${LLM_HF_FILE} from ${LLM_HF_REPO}..."
+  MODEL_PATH=$("$LLAMA_ENV/bin/hf" download \
+    --format quiet \
+    --type model \
+    "${LLM_HF_REPO}" "${LLM_HF_FILE}")
+  echo "Model cached at: ${MODEL_PATH}"
+
   pkill -f 'llama-server' 2>/dev/null || true
+  # 128k context + q8_0 KV cache: ~21 GB VRAM total (17 GB weights + ~4 GB
+  # KV) on a 24 GB card with a ~27B Q4 model like Qwen3.6-27B. Measured
+  # 2026-04-24 on a 3090 — 3 GB headroom, no OOM on a 13 825-token prompt.
+  # Safe for smaller 24 GB-tier models too; they get proportionally more
+  # headroom. If a future catalog entry needs a different context, grow
+  # the schema to pass `extra_args` through.
   LD_PRELOAD="$LLAMA_ENV/lib/libstdc++.so.6" nohup "$LLAMA_ENV/bin/llama-server" \
-    --hf-repo "${LLM_HF_REPO}" \
-    --hf-file "${LLM_HF_FILE}" \
+    -m "${MODEL_PATH}" \
     --api-key "${LLM_API_KEY}" \
     --host 0.0.0.0 --port 8080 \
     --metrics \
     -ngl 99 \
+    --ctx-size 131072 \
+    --cache-type-k q8_0 \
+    --cache-type-v q8_0 \
     > ~/.skypilot-llms-logs/llama-server.log 2>&1 &
 
   echo "Waiting for llama-server to become healthy..."

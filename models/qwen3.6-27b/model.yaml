@@ -1,0 +1,36 @@
+hf_repo: unsloth/Qwen3.6-27B-GGUF
+hf_file: Qwen3.6-27B-Q4_K_M.gguf
+engine: llamacpp
+tier: 24gb
+min_disk_gb: 64
+extra_args: []
+notes: |
+  27.78B dense hybrid-attention VLM (arch: qwen3_5), 2026-04-21 release.
+  Q4_K_M quant ~16.82 GB — fits a 24 GB card (3090/4090/A5000/A6000/L40S)
+  alongside a small KV cache.
+
+  llama.cpp support landed in PR #19435 (merged 2026-02-08, first in release
+  b7973). conda-forge's b8722 is comfortably past that.
+
+  Running text-only here. The repo also ships vision (mmproj-F16.gguf,
+  ~0.93 GB) — wire it up when the schema grows multi-file support.
+
+  Context is capped at 128k in the sky-llamacpp.yaml preset (with q8_0 KV
+  cache) — ~21 GB VRAM total on a 3090, 3 GB headroom (measured
+  2026-04-24). The model's 262k native context needs a bigger card or CPU
+  offload to reach.
+
+  Benchmark (2026-04-24, RunPod `1x_RTX3090_SECURE`, EU-CZ-1):
+  - Prefill: ~1,214 tok/s (13,825-token prompt in 11.4 s)
+  - Generation: ~37 tok/s on long-prompt decoding; ~40 tok/s on short
+  - vs qwen3-coder-next-80gb on A100-80GB: ~80% of the prefill speed,
+    ~38% of the generation speed. Prefill is compute-bound; generation
+    is memory-bandwidth bound (3090 ~936 GB/s vs A100 ~2 TB/s) × the
+    fact that a 27B dense model touches more weights per token than an
+    80B @ 3B-active MoE.
+
+  Thinking-disable gotcha: Qwen3.6 emits `<think>` blocks by default on
+  current llama.cpp master. `/no_think` in the system prompt does NOT
+  work (issue ggml-org/llama.cpp#22255). Send
+  `"chat_template_kwargs": {"enable_thinking": false}` in the request
+  body to get a direct answer in `content`.
