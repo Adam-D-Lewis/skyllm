@@ -1,0 +1,147 @@
+name: llm-cpumoe
+
+# llama.cpp MoE-with-CPU-offload preset: 24 GB single GPU + big system RAM.
+#
+# Targets the case where a MoE model's weights are too big to fit in GPU
+# VRAM but fits in CPU RAM. `--n-cpu-moe 48` keeps expert weights in system
+# memory; only the dense/active layers and the currently-selected experts
+# transit the GPU. `--cache-type-k/v q8_0` halves the KV cache vs the default
+# f16. This mirrors the owner's local llama-router config for the same model.
+#
+# Not launched directly — `skyllm up <model>` picks this preset when the
+# catalog entry has `engine: llamacpp` and `tier: 24gb-cpumoe`. The
+# `LLM_HF_REPO` / `LLM_HF_FILE` defaults are stack-test fallbacks; the CLI
+# overrides them from the catalog's `hf_repo` / `hf_file`.
+#
+# Uses `hf download` (the official HuggingFace CLI — `huggingface-cli` is
+# deprecated as of huggingface_hub 1.x) to pre-fetch the GGUF before
+# llama-server starts, then passes `-m <path>` (NOT --hf-repo/--hf-file).
+# Two reasons:
+#   1. llama.cpp b8722's `common_pull_file` is broken on some HF endpoints
+#      (issue ggml-org/llama.cpp#21280 matches our failure signature). The
+#      `hf` client handles Xet/LFS/redirects robustly regardless.
+#   2. Download progress is visible in `sky logs` instead of a silent retry
+#      loop in llama-server's log.
+
+envs:
+  LLM_HOSTNAME: ""
+  CF_TUNNEL_TOKEN: ""
+  LLM_API_KEY: ""
+  # Stack-test defaults — overridden by the CLI from the catalog.
+  LLM_HF_REPO: Qwen/Qwen2.5-0.5B-Instruct-GGUF
+  LLM_HF_FILE: qwen2.5-0.5b-instruct-q4_k_m.gguf
+  HF_TOKEN: ""
+  IDLE_MINUTES: "15"
+  # Tighter than sky-llamacpp.yaml's 240 min — MoE + CPU offload is a
+  # deliberate constrained-hardware profile; long idle sessions here are
+  # rarely what the user wants. Bump via .env if needed.
+  MAX_RUNTIME_MINUTES: "120"
+  IDLE_METRIC: "llamacpp:n_tokens_predicted_total"
+
+resources:
+  cloud: runpod
+  # Same 24 GB cards as sky-llamacpp.yaml — the loading strategy differs,
+  # not the GPU class. SkyPilot picks the cheapest available.
+  accelerators: {RTX4090:1, RTX3090:1, RTXA5000:1, RTXA6000:1, L40S:1}
+  # Large memory floor — with --n-cpu-moe 48 the expert weights sit in
+  # system RAM. A ~48 GB MoE GGUF needs ~40–45 GB resident plus OS overhead.
+  # 64+ is a practical minimum that keeps RunPod availability wide (many
+  # cheap 3090/4090 pods have 48–64 GB); bump if OOM shows up in practice.
+  memory: 64+
+  # CPU-offloaded MoE is memory-bandwidth × core-count bound during token
+  # generation. Empirically (2026-04-24 test on RunPod's L40S SKU with
+  # ~7.65 effective vCPUs) we got ~0.6 tok/s — orders of magnitude below
+  # the owner's local 3060 setup. 16+ forces SkyPilot to skip the cheapest
+  # RunPod SKUs (RTXA5000=3, RTX3090=4, RTX4090=5, RTXA6000=8 vCPU) and
+  # land on beefier pods. Bump further if practical perf is still below
+  # expectations.
+  cpus: 16+
+  # Big disk for big GGUFs + HF cache overhead. 48 GB MXFP4 + download
+  # staging easily pushes past the default.
+  disk_size: 128
+  ports: 8080
+
+# See sky/sky.yaml for why this is an explicit allowlist instead of
+# `workdir: .` (secret-leak safety via minimal upload surface).
+file_mounts:
+  ~/sky_workdir/pixi.toml: pod/pixi.toml
+  ~/sky_workdir/pixi.lock: pod/pixi.lock
+  ~/sky_workdir/scripts/idle-watch.sh: scripts/idle-watch.sh
+
+setup: |
+  set -e
+  if ! command -v pixi >/dev/null 2>&1 && [ ! -x "$HOME/.pixi/bin/pixi" ]; then
+    curl -fsSL https://pixi.sh/install.sh | bash
+  fi
+  export PATH="$HOME/.pixi/bin:$PATH"
+  # llamacpp env now also ships huggingface_hub (for the CLI binary used
+  # in the run block to pre-download the GGUF). See pod/pixi.toml.
+  pixi install -e llamacpp
+
+  if ! command -v cloudflared >/dev/null; then
+    sudo curl -fL -o /usr/local/bin/cloudflared \
+      https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+    sudo chmod +x /usr/local/bin/cloudflared
+  fi
+
+run: |
+  set -e
+
+  sudo shutdown -h +${MAX_RUNTIME_MINUTES} "skypilot-llms wall-clock cap" 2>/dev/null &
+
+  : "${LLM_HOSTNAME:?LLM_HOSTNAME is required — set it in .env}"
+  : "${CF_TUNNEL_TOKEN:?CF_TUNNEL_TOKEN is required — set it in .env}"
+  : "${LLM_API_KEY:?LLM_API_KEY is required — set it in .env}"
+
+  mkdir -p ~/.skypilot-llms-logs
+  export PATH="$HOME/.pixi/bin:$PATH"
+
+  LLAMA_ENV="$HOME/sky_workdir/.pixi/envs/llamacpp"
+
+  # Pre-download the GGUF via `hf` (robust to Xet/LFS redirects; see top
+  # comment). `--format quiet` makes stdout exactly the cached file path so
+  # $() capture is clean — the default `auto` format prefixes it with `path=`.
+  # Idempotent on cache hit — no re-download across `sky launch` restarts.
+  echo "Downloading ${LLM_HF_FILE} from ${LLM_HF_REPO}..."
+  MODEL_PATH=$("$LLAMA_ENV/bin/hf" download \
+    --format quiet \
+    --type model \
+    "${LLM_HF_REPO}" "${LLM_HF_FILE}")
+  echo "Model cached at: ${MODEL_PATH}"
+
+  # Start llama-server against the local path. Flags mirror the owner's
+  # local llama-router config for Qwen3-Coder-Next:
+  #   --ctx-size 131072   full native context
+  #   --n-cpu-moe 48      MoE experts in CPU RAM; active/dense on GPU
+  #   --cache-type-k/v q8_0  halves KV cache vs f16 default
+  pkill -f 'llama-server' 2>/dev/null || true
+  LD_PRELOAD="$LLAMA_ENV/lib/libstdc++.so.6" nohup "$LLAMA_ENV/bin/llama-server" \
+    -m "${MODEL_PATH}" \
+    --api-key "${LLM_API_KEY}" \
+    --host 0.0.0.0 --port 8080 \
+    --metrics \
+    -ngl 99 \
+    --ctx-size 131072 \
+    --n-cpu-moe 48 \
+    --cache-type-k q8_0 \
+    --cache-type-v q8_0 \
+    > ~/.skypilot-llms-logs/llama-server.log 2>&1 &
+
+  # CPU-offloaded MoE load is slow — warmup can take several minutes as
+  # experts page through RAM. 20 min wait gives headroom on first touch.
+  echo "Waiting for llama-server to become healthy..."
+  for i in $(seq 1 240); do
+    if curl -sf http://localhost:8080/health >/dev/null 2>&1; then
+      echo "llama-server is ready"
+      break
+    fi
+    sleep 5
+  done
+
+  pkill -f 'cloudflared' 2>/dev/null || true
+  nohup cloudflared tunnel --no-autoupdate run --token "${CF_TUNNEL_TOKEN}" \
+    > ~/.skypilot-llms-logs/cloudflared.log 2>&1 &
+
+  echo "Tunnel up: https://${LLM_HOSTNAME}/v1"
+
+  bash scripts/idle-watch.sh

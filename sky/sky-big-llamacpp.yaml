@@ -70,6 +70,15 @@ run: |
   mkdir -p ~/.skypilot-llms-logs
   export PATH="$HOME/.pixi/bin:$PATH"
 
+  # --hf-repo/--hf-file caveat: this preset targets the 48–80 GB tier, so
+  # any model worth running here is almost certainly big enough to be served
+  # via HuggingFace Xet storage — which llama.cpp b8722's built-in
+  # downloader doesn't handle (issue ggml-org/llama.cpp#21280, status:-1
+  # retry loop). Empirically confirmed on unsloth/Qwen3-Coder-Next MXFP4
+  # 2026-04-24. If you route a catalog entry to this preset and it hangs
+  # in the download loop, port the `hf download --format quiet` pre-fetch
+  # pattern from sky/sky-llamacpp-cpumoe.yaml (call `hf` from
+  # $LLAMA_ENV/bin/ and pass `-m <path>` to llama-server instead).
   LLAMA_ENV="$HOME/sky_workdir/.pixi/envs/llamacpp"
   pkill -f 'llama-server' 2>/dev/null || true
   LD_PRELOAD="$LLAMA_ENV/lib/libstdc++.so.6" nohup "$LLAMA_ENV/bin/llama-server" \

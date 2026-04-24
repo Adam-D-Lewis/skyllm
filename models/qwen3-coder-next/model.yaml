@@ -1,19 +1,22 @@
 hf_repo: unsloth/Qwen3-Coder-Next-GGUF
 hf_file: Qwen3-Coder-Next-MXFP4_MOE.gguf
 engine: llamacpp
-tier: 48-80gb
-min_disk_gb: 250
+tier: 24gb-cpumoe
+min_disk_gb: 128
 extra_args: []
 notes: |
   80B-total / 3B-active MoE. MXFP4 MoE quant: ~48 GB on disk.
 
-  Fits on a 48 GB card (A6000/L40S) only at reduced context; full 131k
-  context + q8_0 KV cache wants an 80 GB card (A100-80GB/H100). Without
-  CPU offload — the local llama-router config uses `n-cpu-moe=48` to fit
-  a 3090, but the cloud big-tier has enough VRAM to skip that.
+  Deployed with CPU offload on a 24 GB card (3090/4090/A5000/A6000/L40S) +
+  ~96 GB system RAM. `sky/sky-llamacpp-cpumoe.yaml` runs llama-server with
+  `--n-cpu-moe 48 --ctx-size 131072 --cache-type-k q8_0 --cache-type-v q8_0`,
+  matching the owner's local llama-router config for this model. Expert
+  weights sit in RAM; only active/dense tensors transit the GPU.
+
+  Could also run pure-GPU on an 80 GB card (A100-80GB/H100) via the
+  48-80gb tier if one is available — see the sky-big-llamacpp.yaml preset.
+  Not the default because 80 GB cards are availability-constrained and
+  several × more expensive per hour.
 
   Engine is llama.cpp because the MXFP4 weights ship as GGUF and vLLM's
   GGUF support is still experimental.
-
-  Launched via sky-big-llamacpp.yaml (added for this model; parallels
-  sky-big.yaml but with the llama.cpp engine).

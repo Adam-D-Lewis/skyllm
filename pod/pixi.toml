@@ -50,6 +50,10 @@ vllm = "*"
 # Empirically verified on RunPod pods with drivers 570.211 and 580.126.
 [feature.llamacpp.dependencies]
 "llama.cpp" = { version = "*", build = "cuda129*" }
+# huggingface_hub ships the `huggingface-cli` binary used by the cpu-moe
+# preset to pre-download large GGUFs (bypasses llama.cpp b8722's broken
+# HF download path; see sky/sky-llamacpp-cpumoe.yaml for details).
+huggingface_hub = "*"
 
 # ---------------------------------------------------------------------------
 # Environments

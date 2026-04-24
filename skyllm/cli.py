@@ -30,12 +30,13 @@ CLUSTER = "llm"
 DEFAULT_MODEL = "qwen-0.5b"
 
 # (engine, tier) → sky preset path (relative to ROOT). Exhaustive for the
-# current catalog. All four YAMLs live under sky/ to keep the repo root lean.
+# current catalog. All preset YAMLs live under sky/ to keep the repo root lean.
 PRESETS: dict[tuple[str, str], str] = {
     ("vllm", "24gb"): "sky/sky.yaml",
     ("vllm", "48-80gb"): "sky/sky-big.yaml",
     ("llamacpp", "24gb"): "sky/sky-llamacpp.yaml",
     ("llamacpp", "48-80gb"): "sky/sky-big-llamacpp.yaml",
+    ("llamacpp", "24gb-cpumoe"): "sky/sky-llamacpp-cpumoe.yaml",
 }
 
 app = typer.Typer(

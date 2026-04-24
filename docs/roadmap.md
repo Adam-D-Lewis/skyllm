@@ -136,6 +136,15 @@ Deferred (to Phase 4 or first real use):
 Gotchas worth knowing for whoever picks this up:
 - **`--env-file` overrides `--env`** in SkyPilot (documented [here](https://docs.skypilot.co/en/latest/running-jobs/environment-variables.html); counterintuitive relative to CLI conventions). Any key that lives in both `.env` and the CLI's `--env` flag will take its value from `.env`. This is why stale model-identity lines in `.env` silently broke our first `qwen3-coder-next` launch.
 
+Known schema gap (not yet resolved):
+- **Multiple deployment profiles for the same model aren't cleanly expressible.** Today a catalog entry declares one `(engine, tier)` pair and the CLI routes to one preset. Qwen3-Coder-Next has two legitimate shapes — pure-GPU on an 80 GB card vs. CPU-offloaded MoE on a 24 GB card + big RAM — and there's no good way to keep both without either duplicating catalog entries or adding an unscoped override flag. We've shipped one shape at a time (currently `24gb-cpumoe`, because the 80 GB path is blocked behind llama.cpp #21280 + RunPod availability). The right fix is a schema refactor, but defer until a second model actually wants the same treatment.
+
+Perf note on the `24gb-cpumoe` path (e2e 2026-04-24):
+- Correctness validated end-to-end (download via `hf`, llama-server loads 48 GB MXFP4 MoE, real `/v1/chat/completions` returns generated text).
+- But **~0.6 tok/s** on RunPod's L40S SKU (7.65 effective vCPUs after cgroup quota, out of the 12 advertised). Orders of magnitude below the owner's local 3060 setup. Root cause is CPU core-count + memory-bandwidth during token generation — every token waits on MoE experts paging from system RAM through a thin CPU slice.
+- `sky/sky-llamacpp-cpumoe.yaml` now filters `cpus: 16+` + `memory: 64+` to skip the smallest RunPod SKUs. Un-validated whether that's actually faster; availability may narrow. Re-test before declaring the cpu-moe path practical for anything beyond correctness smoke tests.
+- Use this path for functional validation, not real inference workloads. For real use, either wait on the 80 GB card path (once llama.cpp #21280 lands on conda-forge) or run locally.
+
 ---
 
 ## Phase 4 — Multi-provider (deferred, don't start)

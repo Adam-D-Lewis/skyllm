@@ -80,6 +80,16 @@ run: |
   # Direct env-binary invoke + LD_PRELOAD env's libstdc++ — see docs/pixi.md.
   # llama-server is a C++ binary (not python) so the libstdc++ pin issue is
   # less likely to apply, but keeping it for consistency — cheap insurance.
+  #
+  # --hf-repo/--hf-file caveat: llama.cpp b8722's built-in downloader
+  # (`common_pull_file`) fails on multi-GB files that HuggingFace serves via
+  # Xet storage — see issue ggml-org/llama.cpp#21280. Small GGUFs (a few GB
+  # and under, still on classic LFS) work; big ones hit status:-1 and retry
+  # forever. If a future catalog entry targets this preset with a big GGUF
+  # and hangs in the download loop, port the `hf download --format quiet`
+  # pre-fetch pattern from sky/sky-llamacpp-cpumoe.yaml (call `hf` from
+  # $LLAMA_ENV/bin/ and pass `-m <path>` to llama-server instead of
+  # --hf-repo/--hf-file).
   LLAMA_ENV="$HOME/sky_workdir/.pixi/envs/llamacpp"
   pkill -f 'llama-server' 2>/dev/null || true
   LD_PRELOAD="$LLAMA_ENV/lib/libstdc++.so.6" nohup "$LLAMA_ENV/bin/llama-server" \
