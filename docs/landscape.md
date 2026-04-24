@@ -1,7 +1,7 @@
 # Landscape: what else already does this
 
 Several commercial products and a few open-source peers overlap with what
-skypilot-llms does. None are identical. The interesting question is not
+skyllm does. None are identical. The interesting question is not
 "who's cheapest" but "which axis did each project optimize," because the
 answer differs a lot.
 
@@ -33,26 +33,26 @@ Bill is either a fixed subscription or per-token.
 | **OpenRouter** | Per-token, routes across providers | A marketplace/facade, not a host. Useful as a failover router. |
 | **Featherless** | $10–$75/mo subscription, HF catalog | Subscription access to a large slice of HuggingFace. Structurally closest to Ollama Cloud. |
 
-**Where this category beats skypilot-llms:**
+**Where this category beats skyllm:**
 
 - Zero cold start.
 - Access to frontier open models without sourcing the GPUs yourself.
 - No ops — no tunnels, no pixi, no GPU availability hunting.
-- Per-token pricing is genuinely cheaper at low sustained volume.
+- **Per-token pricing** (Together, Fireworks, Groq, OpenRouter) is genuinely cheaper at low-to-moderate sustained volume — you pay only for the tokens you actually generate, with no cold-start minimum.
 
-**Where skypilot-llms wins:**
+**Where skyllm wins:**
 
 - You know where the GPU is. Ollama won't tell you; Together / Fireworks / Groq don't let you pick.
 - Your prompts don't traverse a vendor whose privacy policy or business model can change without notice.
 - You pick the exact engine, quant, and flags (e.g. `--n-cpu-moe 48`, `--ctx-size 131072`, `--cache-type-k q8_0`). Managed APIs ship one fixed configuration per model.
-- No per-month minimum.
+- No per-month minimum. **Subscription pricing** (Ollama Pro $20/mo, Featherless) is *not* cheaper than skyllm at low usage — at a few active hours per month, ~$1/hr on RunPod community still beats a flat $20 floor. Subscriptions compete on zero cold start, zero ops, and frontier-model access, not $.
 
 ---
 
 ## 2. Hosted runtime, BYO model: the actual peer category
 
 You pick the GPU, the region, and the model. They run it. This is what
-skypilot-llms *is* — we just own the control plane ourselves instead of
+skyllm *is* — we just own the control plane ourselves instead of
 renting one.
 
 | Product | Region selection | Lock-in |
@@ -67,14 +67,14 @@ All accept a container or a Python entrypoint. All handle the
 infrastructure bits we handle ourselves — broken nodes, autoscaling,
 dashboards.
 
-**Where this category beats skypilot-llms:**
+**Where this category beats skyllm:**
 
 - Warm pools → faster cold starts.
 - Polished dashboards, versioning, per-revision rollout.
 - Someone else fixes broken GPU nodes at 3 a.m.
 - Autoscaling is a checkbox, not a rewrite.
 
-**Where skypilot-llms wins:**
+**Where skyllm wins:**
 
 - Not locked into one vendor's control plane. SkyPilot targets a dozen+ clouds; Phase 4 of our roadmap moves to AWS/GCP without rewriting configs. HF Endpoints, Modal, Baseten, RunPod Serverless — each ties you to their runtime.
 - Reproducible envs via `pod/pixi.lock`. The exact versions that worked last week work today, deterministically.
@@ -88,7 +88,7 @@ dashboards.
 
 | Project | Relation |
 |---|---|
-| **Raw SkyPilot + a vLLM / llama.cpp YAML** | What skypilot-llms wraps. If you need one model once, you don't need us. |
+| **Raw SkyPilot + a vLLM / llama.cpp YAML** | What skyllm wraps. If you need one model once, you don't need us. |
 | **dstack** | SkyPilot peer. Rejected for this project — see `docs/alternatives.md`. |
 | **LM Studio / KoboldCPP / llama.cpp locally** | For when you already have a capable GPU. No cloud at all. |
 
@@ -104,7 +104,7 @@ pick the right preset.
 
 ## Honest positioning
 
-skypilot-llms is the right choice when all three of these hold:
+skyllm is the right choice when all three of these hold:
 
 1. You want a specific provider / region — for compliance, latency, or because you just want to know where your prompts go.
 2. You care about reproducibility (exact versions, exact flags) more than ops polish.
