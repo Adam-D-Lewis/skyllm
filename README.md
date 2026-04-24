@@ -76,7 +76,9 @@ cp .env.example .env
 # Edit .env — at minimum set LLM_HOSTNAME, CF_TUNNEL_TOKEN, LLM_API_KEY, RUNPOD_API_KEY
 ```
 
-Generate an API key with `openssl rand -hex 32`.
+Generate `LLM_API_KEY` with `openssl rand -hex 32`.
+
+> ⚠️ **`LLM_API_KEY` is the only thing gating your endpoint from the public internet.** A Cloudflare Tunnel routes `https://llm.yourdomain.com/` to your pod but does *not* authenticate clients at the CF edge — anyone who resolves the hostname can probe it. llama-server rejects anything without the bearer, so a strong random key (the `openssl` command above produces 256 bits of entropy) is what keeps scanners out. Do **not** use a short memorable string. If you want edge-level auth (Cloudflare Access, etc.) on top, see [`docs/roadmap/edge-auth.md`](docs/roadmap/edge-auth.md).
 
 ### 4. Set a RunPod spend limit
 

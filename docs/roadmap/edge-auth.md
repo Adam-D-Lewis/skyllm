@@ -4,13 +4,23 @@
 
 ## Current state
 
-The CF Tunnel that ships with v1 exposes the origin (`llama-server --api-key`) on a public hostname. Cloudflare Tunnel itself does *not* authenticate clients — it just creates a secure outbound channel from the pod to CF's edge. Anyone on the internet can hit `https://llm.yourdomain.com/v1/...` and reach the origin; the only gate is `llama-server`'s `Authorization: Bearer $LLM_API_KEY` check.
+The CF Tunnel that ships with v1 exposes the origin (`llama-server --api-key`) on a public hostname. Cloudflare Tunnel itself does *not* authenticate clients — it just creates a secure outbound channel from the pod to CF's edge. Anyone on the internet can hit `https://llm.yourdomain.com/...` and reach the origin.
 
-Observed symptom (2026-04-24 on a live Qwen3.6-27B deployment): intermittent `Unauthorized: Invalid API Key` entries in `llama-server.log` concurrent with legitimate chats. Almost certainly internet scanners probing `/v1/chat/completions` (a well-known shape bots scan for). Harmless per-request — the bearer token is 256 bits of entropy, so brute-force isn't happening — but:
+What the bearer token (`--api-key $LLM_API_KEY`) actually covers on llama-server (verified 2026-04-24):
+
+| Endpoint | Auth required? | Leak if unauthed |
+|---|---|---|
+| `/v1/*` (chat, completions, models) | ✅ yes | — |
+| `/metrics` (Prometheus) | ✅ yes | — |
+| `/health` | ❌ no | `{"status":"ok"}` only — no information leak |
+
+So with a strong 256-bit `LLM_API_KEY`, the attack surface really is just the bearer token's entropy. This is stronger than I initially thought — `/metrics` is *not* publicly scrapeable, which was a concern earlier.
+
+Observed symptom (2026-04-24 on a live Qwen3.6-27B deployment): intermittent `Unauthorized: Invalid API Key` entries in `llama-server.log` concurrent with legitimate chats. Almost certainly internet scanners probing `/v1/chat/completions` (a well-known shape bots scan for). Harmless per-request — 256 bits of entropy makes brute-force infeasible — but:
 
 - Clogs logs (hard to distinguish real auth mistakes from scanner noise).
-- Wastes origin CPU on every auth-reject.
-- No defense-in-depth: if the bearer token leaks, there's nothing else in the way.
+- Wastes a small amount of origin CPU on every auth-reject.
+- No defense-in-depth: if the bearer token ever leaks (accidentally committed to a repo, shared in a screenshot, exfiltrated by a compromised client), there's nothing else in the way.
 
 ## Why this is a separate doc
 
