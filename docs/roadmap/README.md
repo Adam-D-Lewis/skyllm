@@ -24,6 +24,10 @@ Target end state: `skyllm up <model>` launches the right SkyPilot preset with th
 
 - [Provider / machine variance tracker](variance-tracker.md) — things that differ across providers or machines that we don't control (CUDA driver, sshd, writable paths, etc.). The single source of truth for "why does this pixi pin exist."
 
+## Open gaps (not yet phased)
+
+- [Edge-level authentication](edge-auth.md) — CF Tunnel today authenticates the tunnel itself, not the clients hitting it. Bearer-token-at-origin is the only gate; public hostname = public probeable. Options: CF Access (v1-compatible, low-friction) or FRP + WireGuard (lands naturally with the planned v2 migration). Flagged 2026-04-24 after observing scanner-induced 401s on a live deployment.
+
 ## Current status
 
 Phases 1–3 are closed. Scaffold is production-shaped for single-provider 24 GB-tier use plus the two big-tier llama.cpp paths (`24gb-cpumoe`, `80gb`).
