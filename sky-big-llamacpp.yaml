@@ -1,0 +1,94 @@
+name: llm-big
+
+# "Big" llama.cpp preset: 48–80 GB single-GPU tier for GGUF models that
+# don't fit on a 24 GB card (e.g. Qwen3-Coder-Next MXFP4 MoE, ~48 GB on
+# disk). Parallels sky-big.yaml (vLLM) but uses the llama.cpp pixi env.
+#
+# Usage:
+#   YAML=sky-big-llamacpp.yaml make up
+#
+# Shares sky-llamacpp.yaml's structure; only the accelerator list,
+# disk_size, and MAX_RUNTIME_MINUTES default differ. Hourly cost on this
+# tier is several × higher, so the wall-clock cap is correspondingly
+# tighter — override in .env if you need a longer session.
+
+envs:
+  LLM_HOSTNAME: ""
+  CF_TUNNEL_TOKEN: ""
+  LLM_API_KEY: ""
+  LLM_HF_REPO: unsloth/Qwen3-Coder-Next-GGUF
+  LLM_HF_FILE: Qwen3-Coder-Next-MXFP4_MOE.gguf
+  HF_TOKEN: ""
+  IDLE_MINUTES: "15"
+  # Shorter than sky-llamacpp.yaml's 240 min — matching sky-big.yaml's 60
+  # min cap for the same cost reason.
+  MAX_RUNTIME_MINUTES: "60"
+  IDLE_METRIC: "llamacpp:n_tokens_predicted_total"
+
+resources:
+  cloud: runpod
+  # 48–80 GB tier. 80 GB cards (A100-80GB/H100) are the safe bet for the
+  # default model's 131k context + q8_0 KV cache; A6000/L40S work only at
+  # reduced context. SkyPilot picks cheapest available at launch.
+  accelerators: {A6000:1, L40S:1, A100-80GB:1, A100:1, H100:1}
+  # Bigger disk for bigger GGUFs — MXFP4 MoE Qwen3-Coder-Next is ~48 GB,
+  # plus HF cache overhead.
+  disk_size: 250
+  ports: 8080
+
+workdir: .
+
+setup: |
+  set -e
+  if ! command -v pixi >/dev/null 2>&1 && [ ! -x "$HOME/.pixi/bin/pixi" ]; then
+    curl -fsSL https://pixi.sh/install.sh | bash
+  fi
+  export PATH="$HOME/.pixi/bin:$PATH"
+  pixi install -e llamacpp
+
+  if ! command -v cloudflared >/dev/null; then
+    sudo curl -fL -o /usr/local/bin/cloudflared \
+      https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+    sudo chmod +x /usr/local/bin/cloudflared
+  fi
+
+run: |
+  set -e
+
+  sudo shutdown -h +${MAX_RUNTIME_MINUTES} "skypilot-llms wall-clock cap" 2>/dev/null &
+
+  : "${LLM_HOSTNAME:?LLM_HOSTNAME is required — set it in .env}"
+  : "${CF_TUNNEL_TOKEN:?CF_TUNNEL_TOKEN is required — set it in .env}"
+  : "${LLM_API_KEY:?LLM_API_KEY is required — set it in .env}"
+
+  mkdir -p ~/.skypilot-llms-logs
+  export PATH="$HOME/.pixi/bin:$PATH"
+
+  LLAMA_ENV="$HOME/sky_workdir/.pixi/envs/llamacpp"
+  pkill -f 'llama-server' 2>/dev/null || true
+  LD_PRELOAD="$LLAMA_ENV/lib/libstdc++.so.6" nohup "$LLAMA_ENV/bin/llama-server" \
+    --hf-repo "${LLM_HF_REPO}" \
+    --hf-file "${LLM_HF_FILE}" \
+    --api-key "${LLM_API_KEY}" \
+    --host 0.0.0.0 --port 8080 \
+    --metrics \
+    -ngl 99 \
+    > ~/.skypilot-llms-logs/llama-server.log 2>&1 &
+
+  # Big GGUFs take longer to download + load — wait up to 20 minutes.
+  echo "Waiting for llama-server to become healthy..."
+  for i in $(seq 1 240); do
+    if curl -sf http://localhost:8080/health >/dev/null 2>&1; then
+      echo "llama-server is ready"
+      break
+    fi
+    sleep 5
+  done
+
+  pkill -f 'cloudflared' 2>/dev/null || true
+  nohup cloudflared tunnel --no-autoupdate run --token "${CF_TUNNEL_TOKEN}" \
+    > ~/.skypilot-llms-logs/cloudflared.log 2>&1 &
+
+  echo "Tunnel up: https://${LLM_HOSTNAME}/v1"
+
+  bash scripts/idle-watch.sh

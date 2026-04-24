@@ -1,0 +1,8 @@
+hf_repo: Qwen/Qwen2.5-0.5B-Instruct
+engine: vllm
+tier: 24gb
+min_disk_gb: 100
+notes: |
+  Tiny stack-test model. Same identity as the default LLM_MODEL in .env.example.
+  Useful for verifying the pipeline end-to-end without paying for a real model
+  download. Swap to a bigger model once the stack is green.

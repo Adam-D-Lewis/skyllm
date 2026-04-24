@@ -41,8 +41,22 @@ vllm = "*"
 "llama.cpp" = { version = "*", build = "cuda129*" }
 
 # ---------------------------------------------------------------------------
+# CLI / catalog tooling (local-only, no CUDA)
+# ---------------------------------------------------------------------------
+# Deps for the model-catalog schema and (in Phase 3) the `skyllm` CLI. Kept
+# separate from vllm/llamacpp so developers on laptops can `pixi install -e
+# cli` without pulling CUDA wheels. Phase 3 will add typer + skypilot here.
+[feature.cli.dependencies]
+pydantic = ">=2"
+pyyaml = "*"
+
+[feature.cli.tasks]
+validate = "python -m skyllm.validate"
+
+# ---------------------------------------------------------------------------
 # Environments
 # ---------------------------------------------------------------------------
 [environments]
 vllm = { features = ["vllm"], solve-group = "vllm" }
 llamacpp = { features = ["llamacpp"], solve-group = "llamacpp" }
+cli = { features = ["cli"], solve-group = "cli" }
