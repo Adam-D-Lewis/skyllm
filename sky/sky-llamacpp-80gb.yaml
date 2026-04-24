@@ -1,44 +1,46 @@
-name: llm-big
+name: llm-80gb
 
-# "Big" llama.cpp preset: 48–80 GB single-GPU tier for GGUF models that
-# don't fit on a 24 GB card (e.g. Qwen3-Coder-Next MXFP4 MoE, ~48 GB on
-# disk). Parallels sky-big.yaml (vLLM) but uses the llama.cpp pixi env.
+# llama.cpp pure-GPU preset: 80 GB single card for large GGUFs that fit
+# entirely in VRAM. Contrast with sky/sky-llamacpp-cpumoe.yaml, which targets
+# the same class of models on a 24 GB card via CPU-offloaded experts.
 #
 # Not launched directly — `skyllm up <model>` picks this preset when the
-# catalog entry has `engine: llamacpp` and `tier: 48-80gb`.
+# catalog entry has `engine: llamacpp` and `tier: 80gb`. The `LLM_HF_REPO`
+# / `LLM_HF_FILE` defaults are stack-test fallbacks; the CLI overrides them
+# from the catalog's `hf_repo` / `hf_file`.
 #
-# Shares sky-llamacpp.yaml's structure; only the accelerator list,
-# disk_size, and MAX_RUNTIME_MINUTES default differ. Hourly cost on this
-# tier is several × higher, so the wall-clock cap is correspondingly
-# tighter — override in .env if you need a longer session.
+# Uses `hf download --format quiet` to pre-fetch the GGUF, then passes
+# `-m <path>` to llama-server instead of --hf-repo/--hf-file. Same reason
+# as sky-llamacpp-cpumoe.yaml: llama.cpp b8722's built-in downloader hangs
+# on multi-GB files served via HuggingFace's Xet storage (issue
+# ggml-org/llama.cpp#21280).
 
 envs:
   LLM_HOSTNAME: ""
   CF_TUNNEL_TOKEN: ""
   LLM_API_KEY: ""
-  LLM_HF_REPO: unsloth/Qwen3-Coder-Next-GGUF
-  LLM_HF_FILE: Qwen3-Coder-Next-MXFP4_MOE.gguf
+  # Stack-test defaults — overridden by the CLI from the catalog.
+  LLM_HF_REPO: Qwen/Qwen2.5-0.5B-Instruct-GGUF
+  LLM_HF_FILE: qwen2.5-0.5b-instruct-q4_k_m.gguf
   HF_TOKEN: ""
   IDLE_MINUTES: "15"
-  # Shorter than sky-llamacpp.yaml's 240 min — matching sky-big.yaml's 60
-  # min cap for the same cost reason.
+  # Short cap — 80 GB cards are several × more expensive than the 24 GB
+  # tier. Override in .env if you need a longer session.
   MAX_RUNTIME_MINUTES: "60"
   IDLE_METRIC: "llamacpp:n_tokens_predicted_total"
 
 resources:
   cloud: runpod
-  # 48–80 GB tier. 80 GB cards (A100-80GB/H100) are the safe bet for the
-  # default model's 131k context + q8_0 KV cache; A6000/L40S work only at
-  # reduced context. SkyPilot picks cheapest available at launch.
-  accelerators: {A6000:1, L40S:1, A100-80GB:1, A100:1, H100:1}
-  memory: 16+
-  # Bigger disk for bigger GGUFs — MXFP4 MoE Qwen3-Coder-Next is ~48 GB,
-  # plus HF cache overhead.
+  # 80 GB cards only. A 48 GB MXFP4 model doesn't fit on 48 GB cards
+  # (A6000/L40S) after KV cache; those belong in the cpumoe preset.
+  # SkyPilot picks cheapest available — usually A100-80GB over H100.
+  accelerators: {A100-80GB:1, H100:1}
+  # Big disk for big GGUFs + HF cache staging.
   disk_size: 128
   ports: 8080
 
-# See sky.yaml for why this is an explicit allowlist instead of `workdir: .`
-# (secret-leak safety via minimal upload surface).
+# See sky/sky.yaml for why this is an explicit allowlist instead of
+# `workdir: .` (secret-leak safety via minimal upload surface).
 file_mounts:
   ~/sky_workdir/pixi.toml: pod/pixi.toml
   ~/sky_workdir/pixi.lock: pod/pixi.lock
@@ -70,27 +72,31 @@ run: |
   mkdir -p ~/.skypilot-llms-logs
   export PATH="$HOME/.pixi/bin:$PATH"
 
-  # --hf-repo/--hf-file caveat: this preset targets the 48–80 GB tier, so
-  # any model worth running here is almost certainly big enough to be served
-  # via HuggingFace Xet storage — which llama.cpp b8722's built-in
-  # downloader doesn't handle (issue ggml-org/llama.cpp#21280, status:-1
-  # retry loop). Empirically confirmed on unsloth/Qwen3-Coder-Next MXFP4
-  # 2026-04-24. If you route a catalog entry to this preset and it hangs
-  # in the download loop, port the `hf download --format quiet` pre-fetch
-  # pattern from sky/sky-llamacpp-cpumoe.yaml (call `hf` from
-  # $LLAMA_ENV/bin/ and pass `-m <path>` to llama-server instead).
   LLAMA_ENV="$HOME/sky_workdir/.pixi/envs/llamacpp"
+
+  # Pre-download via `hf`; see sky/sky-llamacpp-cpumoe.yaml top comment.
+  echo "Downloading ${LLM_HF_FILE} from ${LLM_HF_REPO}..."
+  MODEL_PATH=$("$LLAMA_ENV/bin/hf" download \
+    --format quiet \
+    --type model \
+    "${LLM_HF_REPO}" "${LLM_HF_FILE}")
+  echo "Model cached at: ${MODEL_PATH}"
+
+  # Pure-GPU: all layers offloaded (-ngl 99), no --n-cpu-moe. q8_0 KV
+  # cache still halves memory vs f16 — lets the 131k context fit alongside
+  # the 48 GB weights on an 80 GB card.
   pkill -f 'llama-server' 2>/dev/null || true
   LD_PRELOAD="$LLAMA_ENV/lib/libstdc++.so.6" nohup "$LLAMA_ENV/bin/llama-server" \
-    --hf-repo "${LLM_HF_REPO}" \
-    --hf-file "${LLM_HF_FILE}" \
+    -m "${MODEL_PATH}" \
     --api-key "${LLM_API_KEY}" \
     --host 0.0.0.0 --port 8080 \
     --metrics \
     -ngl 99 \
+    --ctx-size 131072 \
+    --cache-type-k q8_0 \
+    --cache-type-v q8_0 \
     > ~/.skypilot-llms-logs/llama-server.log 2>&1 &
 
-  # Big GGUFs take longer to download + load — wait up to 20 minutes.
   echo "Waiting for llama-server to become healthy..."
   for i in $(seq 1 240); do
     if curl -sf http://localhost:8080/health >/dev/null 2>&1; then

@@ -7,7 +7,7 @@ import yaml
 from pydantic import BaseModel, Field, model_validator
 
 Engine = Literal["vllm", "llamacpp"]
-Tier = Literal["24gb", "48-80gb", "24gb-cpumoe"]
+Tier = Literal["24gb", "24gb-cpumoe", "80gb"]
 
 
 class ModelSpec(BaseModel):

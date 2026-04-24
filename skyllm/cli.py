@@ -33,10 +33,9 @@ DEFAULT_MODEL = "qwen-0.5b"
 # current catalog. All preset YAMLs live under sky/ to keep the repo root lean.
 PRESETS: dict[tuple[str, str], str] = {
     ("vllm", "24gb"): "sky/sky.yaml",
-    ("vllm", "48-80gb"): "sky/sky-big.yaml",
     ("llamacpp", "24gb"): "sky/sky-llamacpp.yaml",
-    ("llamacpp", "48-80gb"): "sky/sky-big-llamacpp.yaml",
     ("llamacpp", "24gb-cpumoe"): "sky/sky-llamacpp-cpumoe.yaml",
+    ("llamacpp", "80gb"): "sky/sky-llamacpp-80gb.yaml",
 }
 
 app = typer.Typer(

@@ -15,7 +15,7 @@ A map of what's in this repo and what each piece does. The headline: this is a S
 ## `skyllm/` (the CLI + catalog schema)
 
 - **`cli.py`** — Typer app exposing `list` / `up` / `down` / `status` / `logs` / `health` / `cost` / `budget`. `up <model>` loads `models/<model>/model.yaml`, maps `(engine, tier)` to a preset YAML, and shells out to `sky launch -c llm -y <preset> --env-file .env --env LLM_MODEL=… --idle-minutes-to-autostop 30 --down`. `--dry-run` prints the resolved command without executing.
-- **`schema.py`** — Pydantic `ModelSpec`: `hf_repo`, `engine` (`vllm` | `llamacpp`), `tier` (`24gb` | `48-80gb`), optional `hf_file` (required for llamacpp), `extra_args`, `min_disk_gb`, `notes`. Cross-field validation enforces that llamacpp requires `hf_file` and vllm forbids it.
+- **`schema.py`** — Pydantic `ModelSpec`: `hf_repo`, `engine` (`vllm` | `llamacpp`), `tier` (`24gb` | `24gb-cpumoe` | `80gb`), optional `hf_file` (required for llamacpp), `extra_args`, `min_disk_gb`, `notes`. Cross-field validation enforces that llamacpp requires `hf_file` and vllm forbids it.
 - **`validate.py`** — Loads every `models/*/model.yaml`, reports schema failures, exits nonzero on any. Wired to `pixi run validate`.
 
 ## `models/` (the catalog)
@@ -23,7 +23,8 @@ A map of what's in this repo and what each piece does. The headline: this is a S
 One directory per model, each with a `model.yaml` matching `skyllm/schema.py`. Currently seeded with:
 
 - **`qwen-0.5b/`** — vllm + 24 GB, `Qwen/Qwen2.5-0.5B-Instruct`. Default model for `skyllm up`; fast stack-test.
-- **`qwen3-coder-next/`** — llamacpp + 48–80 GB, `unsloth/Qwen3-Coder-Next-GGUF` (MXFP4 MoE, ~48 GB). Exercises the big-tier llama.cpp preset.
+- **`qwen3-coder-next/`** — llamacpp + `24gb-cpumoe`, `unsloth/Qwen3-Coder-Next-GGUF` (MXFP4 MoE, ~48 GB). Runs on a cheap 24 GB card with expert weights offloaded to ~96 GB system RAM. Correctness-smoke path.
+- **`qwen3-coder-next-80gb/`** — Same model, tier `80gb`. Pure-GPU variant on A100-80GB / H100. Fast (~100 tok/s gen) at several × the hourly cost. Two entries share the model because the schema can't yet express two deployment profiles for one model (see `docs/roadmap.md` "Known schema gap").
 
 Drop a new directory + `model.yaml` in here to add a model; no code changes needed.
 
@@ -32,9 +33,9 @@ Drop a new directory + `model.yaml` in here to add a model; no code changes need
 All four live under `sky/` and define `envs:` (passed in via `--env-file .env` + `--env KEY=VAL` from the catalog), `file_mounts:` (an explicit allowlist uploading only `pod/pixi.toml`, `pod/pixi.lock`, and `scripts/idle-watch.sh` — no `workdir: .`, so stray files / secrets never ride up with the workdir), `resources:` (RunPod + a GPU family), `setup:` (install pixi + the right env), and `run:` (start server + tunnel + idle-watcher). `skyllm up` picks one based on the catalog entry's `(engine, tier)` fields.
 
 - **`sky.yaml`** — vLLM, 24 GB tier (RTX 3090/4090/A5000/A6000/L40S). `setup` installs pixi + the `vllm` env; `run` starts `vllm.entrypoints.openai.api_server` on :8080, waits for `/health`, starts `cloudflared`, then blocks on the idle watcher. 240 min wall-clock cap.
-- **`sky-big.yaml`** — Same stack, 48–80 GB tier (A6000 / L40S / A100 / A100-80GB / H100), 250 GB disk, 60 min wall-clock cap (because an overnight H100 wedge costs real money).
-- **`sky-llamacpp.yaml`** — Alternative engine: installs the conda-forge `llama.cpp` package (cuda129 build, ~1 min cold start) and runs `llama-server` against a GGUF file. Overrides `IDLE_METRIC` so the idle watcher polls llama.cpp's Prometheus counter instead of vLLM's. 24 GB tier.
-- **`sky-big-llamacpp.yaml`** — Same stack as `sky-llamacpp.yaml`, 48–80 GB tier, 250 GB disk, 60 min wall-clock cap. Routed to when a catalog entry is `engine: llamacpp` + `tier: 48-80gb` (e.g. Qwen3-Coder-Next MXFP4).
+- **`sky-llamacpp.yaml`** — Alternative engine on the 24 GB tier: installs the pod's `llamacpp` pixi env (prebuilt cuda129 binary, ~1 min cold start) and runs `llama-server` against a GGUF file. Overrides `IDLE_METRIC` so the idle watcher polls llama.cpp's Prometheus counter instead of vLLM's. Intended for small GGUFs that fit entirely in 24 GB VRAM.
+- **`sky-llamacpp-cpumoe.yaml`** — 24 GB GPU + `memory: 64+` + `cpus: 16+`, for big MoE GGUFs (e.g. Qwen3-Coder-Next MXFP4, ~48 GB). Routes expert weights through RAM via `--n-cpu-moe 48`; order-of-magnitude slower than pure-GPU but far cheaper and more available. Also pre-downloads the GGUF via `hf download` instead of llama.cpp's built-in downloader (see preset top-comment for issue #21280 workaround).
+- **`sky-llamacpp-80gb.yaml`** — 80 GB pure-GPU tier (A100-80GB / H100), for GGUFs up to ~50 GB that fit entirely in VRAM with a 128k-ish context. Same `hf download` workaround. 60 min wall-clock cap (hourly costs several × the 24 GB tier).
 
 The engine split exists because `vllm/vllm-openai` and the llama.cpp images don't ship sshd, and a RunPod pod *is* a container — SkyPilot's bootstrap fails without sshd. That's why we install via pixi onto RunPod's default sshd-capable base image rather than pinning a container.
 
@@ -49,7 +50,8 @@ The engine split exists because `vllm/vllm-openai` and the llama.cpp images don'
 
 ## `docs/`
 
-- **`alternatives.md`** — Decision log. Covers why vLLM was chosen as the default engine (SkyServe + dstack rejection rationale, the sshd-on-RunPod constraint that rules out pinning app images), and what would have to change to re-evaluate. Dated so you know when to re-verify.
+- **`alternatives.md`** — Decision log for *engine / framework* choices. Covers why vLLM was chosen as the default engine (SkyServe + dstack rejection rationale, the sshd-on-RunPod constraint that rules out pinning app images), and what would have to change to re-evaluate. Dated so you know when to re-verify. Not to be confused with `landscape.md`.
+- **`landscape.md`** — Commercial / open-source *competitors* — Ollama Cloud, HuggingFace Inference Endpoints, Modal, Baseten, Together / Fireworks / Groq / etc. Grouped by how closely each actually overlaps with what we do, with honest tradeoffs on each axis.
 - **`pixi.md`** — Why the pixi envs look the way they do: pypi vllm pulling CUDA-enabled torch, the conda-forge cuda129 llama.cpp build, the `[system-requirements] cuda` declaration that RunPod forces, and the `LD_PRELOAD` / direct-env-binary workaround for the libstdc++ / libicui18n ABI trap.
 - **`roadmap.md`** — Phased plan. Phase 1 (pixi swap) ✅, Phase 2 (model catalog) ✅, Phase 3 (`skyllm` CLI) ✅, Phase 4 (multi-provider) deferred.
 - **`toc.md`** — This file.

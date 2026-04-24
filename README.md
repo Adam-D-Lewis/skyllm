@@ -23,7 +23,7 @@ For llama.cpp / GGUF workflows, see the companion `llama-router` project — thi
 Belt, suspenders, and a third belt:
 
 1. **Idle auto-shutdown.** `scripts/idle-watch.sh` watches vLLM's Prometheus metrics (`vllm:generation_tokens_total`); when no tokens have been generated for `$IDLE_MINUTES` (default 15), it exits the SkyPilot run block. Combined with `sky launch --down`, this terminates the cluster.
-2. **Wall-clock cap.** `sudo shutdown -h +$MAX_RUNTIME_MINUTES` runs at launch (4 h default on `sky.yaml`, 1 h on `sky-big.yaml` since hourly rates are several × higher). Even if the idle-watcher wedges, the box powers off.
+2. **Wall-clock cap.** `sudo shutdown -h +$MAX_RUNTIME_MINUTES` runs at launch (4 h default on `sky.yaml`, 1 h on the 80 GB preset since hourly rates are several × higher). Even if the idle-watcher wedges, the box powers off.
 3. **SkyPilot autostop.** `--idle-minutes-to-autostop 30 --down` tells SkyPilot itself to terminate the cluster if the whole job finishes and nothing takes its place.
 4. **Monthly budget check.** `scripts/budget-check.sh` is cron-able on your laptop; it reads `sky cost-report` and runs `sky down` if you've spent over `$MONTHLY_BUDGET_USD` this month.
 5. **Provider-side spend limit** (*the real backstop*). Set a hard monthly limit at <https://www.runpod.io/console/user/billing>. The other safeguards protect against mistakes; this one protects against bugs in the other safeguards.
@@ -142,7 +142,7 @@ Model identity comes from the catalog (`models/<name>/model.yaml`), not `.env`. 
 The default `qwen-0.5b` catalog entry is a 0.5B toy model — fine for testing the pipeline, useless for real work. To launch something bigger, either pick an existing catalog entry:
 
 ```bash
-pixi run skyllm up qwen3-coder-next   # 80B MoE, 48–80 GB tier, llama.cpp
+pixi run skyllm up qwen3-coder-next   # 80B MoE on 24 GB + CPU offload, llama.cpp
 ```
 
 …or add a new model by dropping a `models/<name>/model.yaml` in the catalog (`pixi run validate` checks the schema). Gated HF models (Llama, Gemma, Mistral-Instruct, etc.) need `HF_TOKEN=...` in `.env`. `skyllm down && skyllm up <name>` to apply.
@@ -150,7 +150,7 @@ pixi run skyllm up qwen3-coder-next   # 80B MoE, 48–80 GB tier, llama.cpp
 **If the model is > a few GB**, the re-download on every launch gets annoying. Add an HF cache bucket:
 
 1. Pick any S3/GCS-compatible bucket you control (Cloudflare R2 is cheap and you already have a CF account).
-2. Add to whichever preset YAML the catalog entry resolves to (`sky.yaml`, `sky-big.yaml`, `sky-llamacpp.yaml`, or `sky-big-llamacpp.yaml`):
+2. Add to whichever preset YAML the catalog entry resolves to (one of the files in `sky/`):
    ```yaml
    file_mounts:
      ~/.cache/huggingface:
@@ -167,33 +167,33 @@ Four sibling YAMLs cover the `(engine, tier)` matrix. `skyllm up <model>` picks 
 | YAML | Engine | GPU tier | Used when the catalog entry has… |
 |---|---|---|---|
 | `sky.yaml` | vLLM | 24 GB | `engine: vllm`, `tier: 24gb` (default for stack-test) |
-| `sky-big.yaml` | vLLM | 48–80 GB | `engine: vllm`, `tier: 48-80gb` |
 | `sky-llamacpp.yaml` | llama.cpp | 24 GB | `engine: llamacpp`, `tier: 24gb` |
-| `sky-big-llamacpp.yaml` | llama.cpp | 48–80 GB | `engine: llamacpp`, `tier: 48-80gb` |
+| `sky-llamacpp-cpumoe.yaml` | llama.cpp | 24 GB + CPU-offloaded MoE | `engine: llamacpp`, `tier: 24gb-cpumoe` |
+| `sky-llamacpp-80gb.yaml` | llama.cpp | 80 GB pure-GPU | `engine: llamacpp`, `tier: 80gb` |
 
 See `docs/alternatives.md` for why we don't pin a custom Docker image on RunPod.
 
 ### Scaling up to bigger GPUs
 
-The 24 GB tier (RTX 3090/4090/A5000/A6000/L40S) is fine for models up to ~14B at Q4 or ~7B at Q8. For bigger models, set `tier: 48-80gb` in the catalog entry — `skyllm up` routes to the appropriate big-tier preset (A6000/L40S/A100/A100-80GB/H100):
+The 24 GB tier (RTX 3090/4090/A5000/A6000/L40S) is fine for models up to ~14B at Q4 or ~7B at Q8. For bigger MoE models, two paths are wired up — pick based on cost vs. speed:
+
+- `tier: 24gb-cpumoe` — cheap 24 GB card + ~96 GB system RAM, expert weights offloaded to CPU. Order-of-magnitude slower than pure-GPU but 3–5× cheaper per hour and far better availability. Good for correctness smoke tests.
+- `tier: 80gb` — A100-80GB or H100, everything in VRAM. Fast (~100 tok/s gen on Qwen3-Coder-Next MXFP4) but several × more expensive and availability-constrained.
 
 ```bash
-pixi run skyllm up qwen3-coder-next
+pixi run skyllm up qwen3-coder-next        # cpumoe route
+pixi run skyllm up qwen3-coder-next-80gb   # pure-GPU route
 ```
 
-Big-tier presets ship with a shorter `MAX_RUNTIME_MINUTES` default (60 vs 240) because hourly costs are several × higher — an overnight wedge on H100 is a $200+ mistake. Everything else (tunnel, auth, idle-watch, budget-check) is identical.
+The 80 GB preset ships with a shorter `MAX_RUNTIME_MINUTES` default (60 vs 240) because hourly costs are several × higher — an overnight wedge on H100 is a $200+ mistake. Everything else (tunnel, auth, idle-watch, budget-check) is identical.
 
-Rough fit table:
+Rough fit table. All prices are for RunPod Secure Cloud (SkyPilot's RunPod catalog [is Secure-Cloud-only by design](https://github.com/skypilot-org/skypilot/blob/master/sky/catalog/data_fetchers/fetch_runpod.py#L576-L578), so there's no "random host with root" in the data path — just RunPod itself):
 
-All prices are for RunPod Secure Cloud (SkyPilot's RunPod catalog [is Secure-Cloud-only by design](https://github.com/skypilot-org/skypilot/blob/master/sky/catalog/data_fetchers/fetch_runpod.py#L576-L578), so there's no "random host with root" in the data path — just RunPod itself).
-
-| Tier | GPU options | Models that fit (vLLM) | ~$/hr |
+| Tier | GPU options | Models that fit | ~$/hr |
 |---|---|---|---|
-| `sky.yaml` (24 GB) | 3090/4090/A5000/A6000/L40S | ≤8B FP16, ≤13B FP8/AWQ/GPTQ | 0.50–1.20 |
-| `sky-big.yaml` (48–80 GB) | A6000/L40S/A100/A100-80GB/H100 | ≤70B FP8, ≤34B FP16 | 1.20–4.50 |
-| (future multi-GPU) | A100-80GB:2, H100:2–4 | 70B FP16, 120B+ FP8, DeepSeek-V3 | 4.50–20.00 |
-
-**Multi-GPU** is a one-line diff when you need it: change `accelerators: A100-80GB:1` to `:2` and add `--tensor-parallel-size 2` to the `python -m vllm.entrypoints.openai.api_server` invocation. No other scaffold changes.
+| `24gb` | 3090/4090/A5000/A6000/L40S | ≤8B FP16, ≤13B FP8/AWQ/GPTQ (vLLM); small GGUFs (llama.cpp) | 0.50–1.20 |
+| `24gb-cpumoe` | same, + 96 GB RAM floor | Big MoE GGUFs (e.g. 80B/3B-active at MXFP4) with experts in CPU RAM | 0.80–1.20 |
+| `80gb` | A100-80GB / H100 | Large GGUFs up to ~50 GB pure-GPU | 1.40–4.50 |
 
 **Multi-node** (8+ GPUs across boxes) is out of scope — rarely needed since even 405B models fit on a single 4× or 8× H100 box.
 
@@ -247,18 +247,19 @@ skypilot-llms/
 ├── pod/
 │   ├── pixi.toml             # POD — vllm + llamacpp envs
 │   └── pixi.lock
-├── sky/                      # SkyPilot preset YAMLs (one per (engine, tier))
-│   ├── sky.yaml              # vLLM, 24 GB tier
-│   ├── sky-big.yaml          # vLLM, 48–80 GB tier
-│   ├── sky-llamacpp.yaml     # llama.cpp, 24 GB tier
-│   └── sky-big-llamacpp.yaml # llama.cpp, 48–80 GB tier
-├── skyllm/                   # CLI + catalog schema
-│   ├── cli.py                # list / up / down / status / logs / health / cost / budget
-│   ├── schema.py             # pydantic ModelSpec
-│   └── validate.py           # `pixi run validate`
-├── models/                   # model catalog — one dir per entry
+├── sky/                          # SkyPilot preset YAMLs (one per (engine, tier))
+│   ├── sky.yaml                  # vLLM, 24 GB tier
+│   ├── sky-llamacpp.yaml         # llama.cpp, 24 GB tier (small GGUFs)
+│   ├── sky-llamacpp-cpumoe.yaml  # llama.cpp, 24 GB + CPU-offloaded MoE experts
+│   └── sky-llamacpp-80gb.yaml    # llama.cpp, 80 GB pure-GPU (A100-80GB / H100)
+├── skyllm/                       # CLI + catalog schema
+│   ├── cli.py                    # list / up / down / status / logs / health / cost / budget
+│   ├── schema.py                 # pydantic ModelSpec
+│   └── validate.py               # `pixi run validate`
+├── models/                       # model catalog — one dir per entry
 │   ├── qwen-0.5b/model.yaml
-│   └── qwen3-coder-next/model.yaml
+│   ├── qwen3-coder-next/model.yaml        # 24gb-cpumoe route
+│   └── qwen3-coder-next-80gb/model.yaml   # 80gb pure-GPU route
 ├── docs/
 │   ├── alternatives.md       # why not SkyServe / dstack
 │   ├── pixi.md               # pixi env shape + RunPod lessons
@@ -274,6 +275,8 @@ skypilot-llms/
 ## Alternatives considered
 
 Before writing this scaffold I evaluated SkyPilot SkyServe, dstack, and an existing reference implementation (`Borjagodoy/gpt-oss-runpod-on-demand`). None fit cleanly — write-up at [`docs/alternatives.md`](docs/alternatives.md). TL;DR: SkyServe has a $6/mo controller floor and cold-start 503s; dstack doesn't support RunPod and needs ~$11–20/mo of always-on infra. Revisit if dstack adds RunPod, or if you start needing real concurrent-user burst handling (SkyServe becomes attractive then).
+
+For the *commercial* landscape — Ollama Cloud, HuggingFace Inference Endpoints, Modal, Baseten, Together / Fireworks / Groq, etc. — see [`docs/landscape.md`](docs/landscape.md). Short version: category 1 (managed APIs) genuinely wins for low-volume hobbyist use; category 2 (HF Endpoints, Modal) is the closest peer and wins for ops polish; this repo wins when you care about reproducibility, region transparency, and not being locked into a vendor's control plane.
 
 ## License
 

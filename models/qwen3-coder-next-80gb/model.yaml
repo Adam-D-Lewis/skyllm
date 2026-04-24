@@ -1,0 +1,28 @@
+hf_repo: unsloth/Qwen3-Coder-Next-GGUF
+hf_file: Qwen3-Coder-Next-MXFP4_MOE.gguf
+engine: llamacpp
+tier: 80gb
+min_disk_gb: 128
+extra_args: []
+notes: |
+  Pure-GPU variant of qwen3-coder-next. Same 80B-total / 3B-active MoE,
+  same 48 GB MXFP4 GGUF, but loaded entirely into 80 GB VRAM (no CPU
+  offload). Routes to sky/sky-llamacpp-80gb.yaml → A100-80GB or H100 only.
+
+  Exists alongside models/qwen3-coder-next/ (tier: 24gb-cpumoe) because the
+  catalog schema can't express two deployment profiles for a single model
+  yet — see docs/roadmap.md "Known schema gap". When that's fixed, collapse
+  the two entries.
+
+  Trade-off vs. the cpumoe variant: faster tokens (pure VRAM bandwidth) at
+  several × the hourly cost and tighter RunPod availability for 80 GB cards.
+
+  Benchmark (2026-04-24, RunPod `1x_A100-80GB_SECURE`, $1.39/hr, 117 GB RAM):
+  - Prompt eval: ~1,500 tok/s (7,118-token prompt in 4.7 s)
+  - Generation:  ~97 tok/s (200 tokens in 2.1 s)
+  - Small-prompt throughput was lower (~95 tok/s prefill on 24 tokens) —
+    kernel-launch overhead dominates at tiny batch sizes; the 7k-token run
+    is the representative number.
+  - Cold start: ~2 min provisioning (after exhausting several regions for
+    80 GB card availability) + ~45 s for the 48 GB GGUF download from HF
+    via `hf` + ~1 min for CUDA init / weight load.

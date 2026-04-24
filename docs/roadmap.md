@@ -4,8 +4,8 @@ Target end state: `skyllm up <model>` launches the right SkyPilot preset with th
 
 Design decisions already settled (see conversation 2026-04-23):
 - **Engine axis (vllm / llama.cpp)** maps to pixi environments.
-- **GPU tier axis (24 GB / 48–80 GB)** maps to sky YAML presets. Both vllm presets share the same pixi env.
-- Three sky YAMLs stay as separate, self-contained files — no templating yet.
+- **GPU tier axis (24 GB / 24 GB + CPU-offloaded MoE / 80 GB pure-GPU)** maps to sky YAML presets. All llama.cpp presets share the same pixi env.
+- Sky YAMLs stay as separate, self-contained files — no templating yet.
 - Model config drives tier selection; user picks model, CLI picks preset.
 - CLI in Python (SkyPilot is Python, so we can `import sky` instead of shelling out).
 - Model catalog is directory-per-model (`models/<name>/model.yaml`), not a single big file.
