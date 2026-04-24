@@ -9,7 +9,7 @@
 # as the real backstop.
 #
 # Example crontab (check every 15 min):
-#   */15 * * * * cd /path/to/skypilot-llms && bash scripts/budget-check.sh >> /tmp/skypilot-budget.log 2>&1
+#   */15 * * * * cd /path/to/skyllm && bash scripts/budget-check.sh >> /tmp/skyllm-budget.log 2>&1
 set -euo pipefail
 
 # Source .env for MONTHLY_BUDGET_USD

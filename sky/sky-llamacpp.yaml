@@ -71,13 +71,13 @@ setup: |
 run: |
   set -e
 
-  sudo shutdown -h +${MAX_RUNTIME_MINUTES} "skypilot-llms wall-clock cap" 2>/dev/null &
+  sudo shutdown -h +${MAX_RUNTIME_MINUTES} "skyllm wall-clock cap" 2>/dev/null &
 
   : "${LLM_HOSTNAME:?LLM_HOSTNAME is required — set it in .env}"
   : "${CF_TUNNEL_TOKEN:?CF_TUNNEL_TOKEN is required — set it in .env}"
   : "${LLM_API_KEY:?LLM_API_KEY is required — set it in .env}"
 
-  mkdir -p ~/.skypilot-llms-logs
+  mkdir -p ~/.skyllm-logs
   export PATH="$HOME/.pixi/bin:$PATH"
 
   # Direct env-binary invoke + LD_PRELOAD env's libstdc++ — see docs/pixi.md.
@@ -113,7 +113,7 @@ run: |
     --ctx-size 131072 \
     --cache-type-k q8_0 \
     --cache-type-v q8_0 \
-    > ~/.skypilot-llms-logs/llama-server.log 2>&1 &
+    > ~/.skyllm-logs/llama-server.log 2>&1 &
 
   echo "Waiting for llama-server to become healthy..."
   for i in $(seq 1 240); do
@@ -126,7 +126,7 @@ run: |
 
   pkill -f 'cloudflared' 2>/dev/null || true
   nohup cloudflared tunnel --no-autoupdate run --token "${CF_TUNNEL_TOKEN}" \
-    > ~/.skypilot-llms-logs/cloudflared.log 2>&1 &
+    > ~/.skyllm-logs/cloudflared.log 2>&1 &
 
   echo "Tunnel up: https://${LLM_HOSTNAME}/v1"
 

@@ -211,7 +211,7 @@ Pure resolution failures reproduce on any Linux box. But issues that depend on t
 Use the RunPod base image directly:
 
 ```bash
-docker run --rm -it -v "$HOME:$HOME" -w "$HOME/CodingProjects/skypilot-llms" \
+docker run --rm -it -v "$HOME:$HOME" -w "$HOME/CodingProjects/skyllm" \
   runpod/base:1.0.2-ubuntu2204 bash
 # inside the container:
 curl -fsSL https://pixi.sh/install.sh | bash

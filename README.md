@@ -240,7 +240,7 @@ Two pixi workspaces, kept deliberately separate:
 - **`pod/pixi.toml` + `pod/pixi.lock`** — the `vllm` + `llamacpp` envs that run on RunPod. Nothing else from this repo is ever uploaded to the pod; each sky YAML's `file_mounts:` allowlist rsyncs only `pod/pixi.toml`, `pod/pixi.lock`, and `scripts/idle-watch.sh`. This prevents accidental secret leakage (stray files, `.env`, scratch work) from ever riding up with the workdir.
 
 ```
-skypilot-llms/
+skyllm/
 ├── .env.example              # secrets + infra knobs (no model identity)
 ├── .gitignore
 ├── README.md                 # you are here
