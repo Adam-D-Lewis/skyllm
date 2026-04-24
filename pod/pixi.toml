@@ -1,0 +1,59 @@
+[workspace]
+name = "skypilot-llms-pod"
+channels = ["conda-forge"]
+platforms = ["linux-64"]
+version = "0.1.0"
+
+# Pod-only workspace. This pixi.toml + its lockfile are the only files
+# rsynced to the RunPod pod alongside scripts/idle-watch.sh (see the
+# `file_mounts:` block in each sky*.yaml). Nothing from the repo root ends
+# up on the pod — keeps accidental-secret leakage impossible and makes the
+# pod image surface area fully explicit.
+#
+# The `cli` feature does NOT live here — it stays at the repo root, where
+# developers install it locally. That isolation means the pod's
+# `pixi install -e vllm` can't be confused by a path-referenced editable
+# install that wouldn't exist here anyway.
+#
+# Pinned floor requirements for the hosts we run on. cuda="12" is deliberately
+# lenient (works on any CUDA-12-capable driver); we don't pin to 12.9 so that
+# older-driver RunPod pods don't get excluded at solve time. libc 2.31 is the
+# manylinux baseline most of our pypi wheels target.
+[system-requirements]
+cuda = "12"
+libc = "2.31"
+
+[dependencies]
+python = "3.12.*"
+
+# ---------------------------------------------------------------------------
+# vLLM engine (default)
+# ---------------------------------------------------------------------------
+# `cuda-toolkit` from conda-forge sets up CUDA_HOME inside the pixi env,
+# which lets vllm's sdist build succeed if uv ever falls through to it
+# (though it normally picks the prebuilt CUDA wheel from pypi).
+# `vllm` from pypi pulls `torch==2.10.0+cu128` as a transitive — pypi's
+# torch wheel IS CUDA-enabled, so no extra index needed.
+# Do NOT add `pytorch` from conda-forge here: mixing conda-forge torch with
+# pypi vllm is a documented ABI trap.
+[feature.vllm.dependencies]
+cuda-toolkit = "12.9.*"
+
+[feature.vllm.pypi-dependencies]
+vllm = "*"
+
+# ---------------------------------------------------------------------------
+# llama.cpp engine (opt-in preset)
+# ---------------------------------------------------------------------------
+# cuda129 build — conda-forge ships this with CUDA runtime libs bundled, so
+# it runs on driver 570+ even though CUDA 12.9 nominally needs driver 575+.
+# Empirically verified on RunPod pods with drivers 570.211 and 580.126.
+[feature.llamacpp.dependencies]
+"llama.cpp" = { version = "*", build = "cuda129*" }
+
+# ---------------------------------------------------------------------------
+# Environments
+# ---------------------------------------------------------------------------
+[environments]
+vllm = { features = ["vllm"], solve-group = "vllm" }
+llamacpp = { features = ["llamacpp"], solve-group = "llamacpp" }

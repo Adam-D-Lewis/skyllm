@@ -2,7 +2,7 @@
 
 Cheap, on-demand cloud GPU running an OpenAI-compatible vLLM endpoint, reachable from any tool via a stable public URL.
 
-One `make up` spins up a 24 GB+ NVIDIA GPU on RunPod, starts vLLM's OpenAI-compatible server, and exposes it through a Cloudflare Tunnel at a hostname you control. Clients point at `https://llm.yourdomain.com/v1` forever — the actual GPU comes and goes, the URL stays.
+One `skyllm up` spins up a 24 GB+ NVIDIA GPU on RunPod, starts vLLM's OpenAI-compatible server, and exposes it through a Cloudflare Tunnel at a hostname you control. Clients point at `https://llm.yourdomain.com/v1` forever — the actual GPU comes and goes, the URL stays.
 
 ## Why
 
@@ -35,14 +35,26 @@ Belt, suspenders, and a third belt:
 - A domain managed by Cloudflare (free CF account + ~$10/yr registration).
 - A RunPod account with a payment method and an API key.
 - Python 3.10+ and Docker locally (for the SkyPilot CLI).
+- [pixi](https://pixi.sh/) for the local CLI environment (single static binary).
 
-### 1. Install SkyPilot and verify RunPod
+### 1. Install SkyPilot and the `skyllm` CLI
 
 ```bash
+# SkyPilot CLI + RunPod provider — puts `sky` on your PATH.
 pip install "skypilot[runpod]"
-# Provide the RunPod API key when prompted (or export RUNPOD_API_KEY first)
+# Provide the RunPod API key when prompted (or export RUNPOD_API_KEY first).
 sky check runpod
+
+# The repo's own CLI (local env; no CUDA). The root pixi.toml has `cli` as
+# its default env, so no `-e` flag is needed. This creates the `skyllm`
+# entry point inside the pixi env.
+pixi install
 ```
+
+Run the CLI as `pixi run skyllm <cmd>`, or drop into the env once
+with `pixi shell` and then call bare `skyllm`. The pod-side pixi workspace
+(`pod/pixi.toml` + `pod/pixi.lock`) is deliberately isolated from this
+one — see "Layout" below.
 
 ### 2. Create a Cloudflare Tunnel
 
@@ -73,7 +85,11 @@ Non-optional. Go to <https://www.runpod.io/console/user/billing> and cap monthly
 ### 5. Launch
 
 ```bash
-make up
+# Default model (qwen-0.5b, vLLM, 24 GB tier) — fast stack-test.
+pixi run skyllm up
+
+# Or pick any entry from `skyllm list`:
+pixi run skyllm up qwen3-coder-next
 ```
 
 First launch takes ~5 minutes (provisioning + image pull + model download). Subsequent cold launches re-pay the model download unless you've configured an HF cache bucket (see [Bigger models](#bigger-models)). The `vllm/vllm-openai` image is ~10 GB — first pull is slow, cached thereafter by RunPod.
@@ -98,40 +114,43 @@ client = OpenAI(base_url="https://llm.yourdomain.com/v1", api_key="<your LLM_API
 ### 7. Tear down when done
 
 ```bash
-make down
+pixi run skyllm down
 ```
 
-If you forget, the safeguards kick in. But `make down` is instant and saves you pennies per minute.
+If you forget, the safeguards kick in. But `skyllm down` is instant and saves you pennies per minute.
 
 ## Daily use
 
+All commands below are `pixi run skyllm <cmd>` (drop the `pixi run` prefix inside `pixi shell`). `cli` is the default pixi env at the repo root — no `-e <name>` ever needed.
+
 | Command | What it does |
 |---|---|
-| `make help` | List all targets |
-| `make up` | Launch GPU + start serving (override preset: `YAML=sky-big.yaml make up`) |
-| `make down` | Terminate cluster |
-| `make status` | Is it running? |
-| `make logs` | Tail vLLM + cloudflared logs |
-| `make health` | Hit the public URL and confirm it responds |
-| `make cost` | SkyPilot's running cost report |
-| `make budget` | Run the budget guard once (also cron-able) |
-| `make check` | Verify SkyPilot can talk to RunPod |
+| `skyllm --help` | List all commands |
+| `skyllm list` | Show catalog entries (name / engine / tier / HF repo) |
+| `skyllm up [<model>]` | Launch GPU + start serving. Default model: `qwen-0.5b`. `--dry-run` prints the resolved `sky launch` command |
+| `skyllm down` | Terminate cluster |
+| `skyllm status` | Is it running? |
+| `skyllm logs` | Tail engine + cloudflared logs |
+| `skyllm health` | Hit the public URL and confirm it responds |
+| `skyllm cost` | SkyPilot's running cost report |
+| `skyllm budget` | Run the budget guard once (also cron-able) |
+
+Model identity comes from the catalog (`models/<name>/model.yaml`), not `.env`. Use `skyllm list` to see what's available, or add a new entry (any directory under `models/` with a `model.yaml` conforming to `skyllm/schema.py` is auto-discovered).
 
 ## Bigger models
 
-The default `LLM_MODEL` is a 0.5B toy model — fine for testing the pipeline, useless for real work. To try something bigger, edit `.env`:
+The default `qwen-0.5b` catalog entry is a 0.5B toy model — fine for testing the pipeline, useless for real work. To launch something bigger, either pick an existing catalog entry:
 
-```ini
-LLM_MODEL=Qwen/Qwen2.5-7B-Instruct
-# Or: meta-llama/Llama-3.1-8B-Instruct, mistralai/Mistral-7B-Instruct-v0.3, etc.
+```bash
+pixi run skyllm up qwen3-coder-next   # 80B MoE, 48–80 GB tier, llama.cpp
 ```
 
-Any HuggingFace repo ID vLLM supports works. Gated models (Llama, Gemma, Mistral-Instruct, etc.) need `HF_TOKEN=...` in `.env`. `make down && make up` to apply.
+…or add a new model by dropping a `models/<name>/model.yaml` in the catalog (`pixi run validate` checks the schema). Gated HF models (Llama, Gemma, Mistral-Instruct, etc.) need `HF_TOKEN=...` in `.env`. `skyllm down && skyllm up <name>` to apply.
 
 **If the model is > a few GB**, the re-download on every launch gets annoying. Add an HF cache bucket:
 
 1. Pick any S3/GCS-compatible bucket you control (Cloudflare R2 is cheap and you already have a CF account).
-2. Add to whichever preset YAML you're using (`sky.yaml` and/or `sky-big.yaml`):
+2. Add to whichever preset YAML the catalog entry resolves to (`sky.yaml`, `sky-big.yaml`, `sky-llamacpp.yaml`, or `sky-big-llamacpp.yaml`):
    ```yaml
    file_mounts:
      ~/.cache/huggingface:
@@ -143,26 +162,26 @@ Any HuggingFace repo ID vLLM supports works. Gated models (Llama, Gemma, Mistral
 
 ### Engine presets
 
-Three sibling YAMLs pick the engine + GPU tier. Default is vLLM on the 24 GB tier. Switch via `YAML=...`:
+Four sibling YAMLs cover the `(engine, tier)` matrix. `skyllm up <model>` picks the right one from each catalog entry's `engine` + `tier` fields:
 
-| YAML | Engine | GPU tier | Model config key | Use when |
-|---|---|---|---|---|
-| `sky.yaml` (default) | vLLM | 24 GB | `LLM_MODEL` (HF repo ID) | Most cases. Fast throughput, day-0 HF models. |
-| `sky-big.yaml` | vLLM | 48–80 GB | `LLM_MODEL` | Bigger model than fits on 24 GB. |
-| `sky-llamacpp.yaml` | llama.cpp | 24 GB | `LLM_HF_REPO` + `LLM_HF_FILE` (GGUF) | GGUF-specific quants, config parity with a local `llama-router`, or when you want `llama-server` features vLLM lacks. |
+| YAML | Engine | GPU tier | Used when the catalog entry has… |
+|---|---|---|---|
+| `sky.yaml` | vLLM | 24 GB | `engine: vllm`, `tier: 24gb` (default for stack-test) |
+| `sky-big.yaml` | vLLM | 48–80 GB | `engine: vllm`, `tier: 48-80gb` |
+| `sky-llamacpp.yaml` | llama.cpp | 24 GB | `engine: llamacpp`, `tier: 24gb` |
+| `sky-big-llamacpp.yaml` | llama.cpp | 48–80 GB | `engine: llamacpp`, `tier: 48-80gb` |
 
-`sky-llamacpp.yaml` pays a ~10–15 min cold-start penalty (CUDA toolkit apt-install + source build). See `docs/alternatives.md` for why we don't pin a custom Docker image on RunPod.
+See `docs/alternatives.md` for why we don't pin a custom Docker image on RunPod.
 
 ### Scaling up to bigger GPUs
 
-`sky.yaml` targets the 24 GB tier (RTX 3090/4090/A5000/A6000/L40S) — fine for models up to ~14B at Q4 or ~7B at Q8. For bigger models, there's `sky-big.yaml` which targets the **48–80 GB tier** (A6000, L40S, A100, A100-80GB, H100):
+The 24 GB tier (RTX 3090/4090/A5000/A6000/L40S) is fine for models up to ~14B at Q4 or ~7B at Q8. For bigger models, set `tier: 48-80gb` in the catalog entry — `skyllm up` routes to the appropriate big-tier preset (A6000/L40S/A100/A100-80GB/H100):
 
 ```bash
-# Point LLM_HF_REPO / LLM_HF_FILE at a big model first
-YAML=sky-big.yaml make up
+pixi run skyllm up qwen3-coder-next
 ```
 
-`sky-big.yaml` ships with a shorter `MAX_RUNTIME_MINUTES` default (60 vs 240) because hourly costs are several × higher — an overnight wedge on H100 is a $200+ mistake. Everything else (tunnel, auth, idle-watch, budget-check) is identical.
+Big-tier presets ship with a shorter `MAX_RUNTIME_MINUTES` default (60 vs 240) because hourly costs are several × higher — an overnight wedge on H100 is a $200+ mistake. Everything else (tunnel, auth, idle-watch, budget-check) is identical.
 
 Rough fit table:
 
@@ -183,7 +202,7 @@ All prices are for RunPod Secure Cloud (SkyPilot's RunPod catalog [is Secure-Clo
 v1 targets RunPod because it's simplest. To have SkyPilot pick the cheapest GPU across providers:
 
 1. Run `sky check` for each provider you want (`aws`, `gcp`, `lambda`, `vast`, etc.) — fill in creds as prompted.
-2. Edit `sky.yaml`:
+2. Edit the preset YAML your catalog entry resolves to (e.g. `sky.yaml`):
    ```yaml
    resources:
      # remove: cloud: runpod
@@ -213,22 +232,43 @@ Tailscale + WireGuard is the only configuration in this repo's design space that
 
 ## Layout
 
+Two pixi workspaces, kept deliberately separate:
+
+- **Root (`pixi.toml` + `pixi.lock`)** — the `cli` env, used locally. No CUDA. This is what `pixi install` / `pixi run skyllm` / `pixi run validate` use.
+- **`pod/pixi.toml` + `pod/pixi.lock`** — the `vllm` + `llamacpp` envs that run on RunPod. Nothing else from this repo is ever uploaded to the pod; each sky YAML's `file_mounts:` allowlist rsyncs only `pod/pixi.toml`, `pod/pixi.lock`, and `scripts/idle-watch.sh`. This prevents accidental secret leakage (stray files, `.env`, scratch work) from ever riding up with the workdir.
+
 ```
 skypilot-llms/
-├── .env.example       # every config var, documented
+├── .env.example              # secrets + infra knobs (no model identity)
 ├── .gitignore
-├── Makefile           # up / down / status / logs / health / cost / budget
-├── README.md          # you are here
-├── sky.yaml           # SkyPilot task — vLLM, 24 GB tier (default)
-├── sky-big.yaml       # SkyPilot task — vLLM, 48–80 GB tier (YAML=sky-big.yaml make up)
-├── sky-llamacpp.yaml  # SkyPilot task — llama.cpp, 24 GB tier (YAML=sky-llamacpp.yaml make up)
+├── README.md                 # you are here
+├── pyproject.toml            # skyllm package + `skyllm` entry point
+├── pixi.toml / pixi.lock     # LOCAL — cli env (default)
+├── pod/
+│   ├── pixi.toml             # POD — vllm + llamacpp envs
+│   └── pixi.lock
+├── sky/                      # SkyPilot preset YAMLs (one per (engine, tier))
+│   ├── sky.yaml              # vLLM, 24 GB tier
+│   ├── sky-big.yaml          # vLLM, 48–80 GB tier
+│   ├── sky-llamacpp.yaml     # llama.cpp, 24 GB tier
+│   └── sky-big-llamacpp.yaml # llama.cpp, 48–80 GB tier
+├── skyllm/                   # CLI + catalog schema
+│   ├── cli.py                # list / up / down / status / logs / health / cost / budget
+│   ├── schema.py             # pydantic ModelSpec
+│   └── validate.py           # `pixi run validate`
+├── models/                   # model catalog — one dir per entry
+│   ├── qwen-0.5b/model.yaml
+│   └── qwen3-coder-next/model.yaml
 ├── docs/
-│   └── alternatives.md   # why not SkyServe / dstack / llama.cpp
+│   ├── alternatives.md       # why not SkyServe / dstack
+│   ├── pixi.md               # pixi env shape + RunPod lessons
+│   ├── roadmap.md            # phased plan (pixi → catalog → CLI → multi-provider)
+│   └── toc.md                # repo tour
 ├── scripts/
-│   ├── idle-watch.sh    # exits the run block when vLLM is idle
-│   └── budget-check.sh  # cron-able spend guard
+│   ├── idle-watch.sh         # exits the run block when the engine is idle
+│   └── budget-check.sh       # cron-able spend guard
 └── caddy/
-    └── Caddyfile.placeholder  # v2 FRP migration stub
+    └── Caddyfile.placeholder # v2 FRP migration stub
 ```
 
 ## Alternatives considered

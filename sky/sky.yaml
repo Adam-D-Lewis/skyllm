@@ -10,7 +10,9 @@ name: llm
 # listed here with `""` are *required at launch time* — SkyPilot errors out if
 # they're still empty. Non-empty values act as defaults.
 # All user-specific values come from .env (via `--env-file .env` on launch,
-# which the Makefile does for you). See .env.example for what to set.
+# which `skyllm up` does for you). Model-identity vars (LLM_MODEL /
+# LLM_HF_REPO / LLM_HF_FILE) come from the catalog, not .env — the CLI
+# injects them as `--env KEY=VAL`. See .env.example for the non-model values.
 envs:
   LLM_HOSTNAME: ""
   CF_TUNNEL_TOKEN: ""
@@ -38,9 +40,16 @@ resources:
   disk_size: 48
   ports: 8080
 
-# Local directory rsynced to the remote node at ~/sky_workdir. `.` means this
-# repo's root, so `scripts/idle-watch.sh` below is reachable from `run:`.
-workdir: .
+# Explicit allowlist of files uploaded to ~/sky_workdir on the pod. We
+# deliberately DO NOT use `workdir: .` — that would rsync the whole repo and
+# anything we forgot to .gitignore (stray secrets, scratch files, the .env
+# the CLI reads locally) would ride up with it. Only these three files are
+# actually referenced by `setup:` / `run:` below; keeping the upload surface
+# minimal makes accidental leakage impossible.
+file_mounts:
+  ~/sky_workdir/pixi.toml: pod/pixi.toml
+  ~/sky_workdir/pixi.lock: pod/pixi.lock
+  ~/sky_workdir/scripts/idle-watch.sh: scripts/idle-watch.sh
 
 # Runs once per cluster provision (or after `sky launch` with code changes).
 # Use it for installs and anything idempotent. Failures here abort the launch.

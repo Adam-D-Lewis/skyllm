@@ -4,8 +4,8 @@ name: llm-big
 # don't fit on a 24 GB card (e.g. Qwen3-Coder-Next MXFP4 MoE, ~48 GB on
 # disk). Parallels sky-big.yaml (vLLM) but uses the llama.cpp pixi env.
 #
-# Usage:
-#   YAML=sky-big-llamacpp.yaml make up
+# Not launched directly — `skyllm up <model>` picks this preset when the
+# catalog entry has `engine: llamacpp` and `tier: 48-80gb`.
 #
 # Shares sky-llamacpp.yaml's structure; only the accelerator list,
 # disk_size, and MAX_RUNTIME_MINUTES default differ. Hourly cost on this
@@ -37,7 +37,12 @@ resources:
   disk_size: 128
   ports: 8080
 
-workdir: .
+# See sky.yaml for why this is an explicit allowlist instead of `workdir: .`
+# (secret-leak safety via minimal upload surface).
+file_mounts:
+  ~/sky_workdir/pixi.toml: pod/pixi.toml
+  ~/sky_workdir/pixi.lock: pod/pixi.lock
+  ~/sky_workdir/scripts/idle-watch.sh: scripts/idle-watch.sh
 
 setup: |
   set -e

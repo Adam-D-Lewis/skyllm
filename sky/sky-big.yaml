@@ -4,12 +4,10 @@ name: llm-big
 # card. Same stack as sky.yaml (vLLM + cloudflared), different GPU class and a
 # shorter wall-clock default because hourly cost is several × higher.
 #
-# Usage:
-#   YAML=sky-big.yaml make up
-#
-# Before launching, point LLM_MODEL in .env at a model that actually needs
-# this tier — default is still a 0.5B model, which will run fine but waste
-# the hardware.
+# Not launched directly — `skyllm up <model>` picks this preset when the
+# catalog entry has `engine: vllm` and `tier: 48-80gb`. The `LLM_MODEL`
+# default below is a stack-test fallback; the CLI overrides it from the
+# catalog's `hf_repo`.
 
 envs:
   LLM_HOSTNAME: ""
@@ -33,7 +31,12 @@ resources:
   disk_size: 150
   ports: 8080
 
-workdir: .
+# See sky.yaml for why this is an explicit allowlist instead of `workdir: .`
+# (secret-leak safety via minimal upload surface).
+file_mounts:
+  ~/sky_workdir/pixi.toml: pod/pixi.toml
+  ~/sky_workdir/pixi.lock: pod/pixi.lock
+  ~/sky_workdir/scripts/idle-watch.sh: scripts/idle-watch.sh
 
 setup: |
   set -e

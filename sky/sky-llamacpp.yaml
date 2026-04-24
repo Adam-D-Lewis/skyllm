@@ -6,8 +6,10 @@ name: llm
 # GGUF support, --metrics Prometheus endpoint, and parity with the owner's
 # local `llama-router` config.
 #
-# Usage:
-#   YAML=sky-llamacpp.yaml make up
+# Not launched directly — `skyllm up <model>` picks this preset when the
+# catalog entry has `engine: llamacpp` and `tier: 24gb`. The `LLM_HF_REPO` /
+# `LLM_HF_FILE` defaults below are stack-test fallbacks; the CLI overrides
+# them from the catalog's `hf_repo` / `hf_file`.
 #
 # Cold-start time: ~1–2 min (pixi install of a prebuilt binary). The old
 # source-build path was ~10–15 min — conda-forge adding a linux-64 CUDA
@@ -38,7 +40,12 @@ resources:
   disk_size: 32
   ports: 8080
 
-workdir: .
+# See sky.yaml for why this is an explicit allowlist instead of `workdir: .`
+# (secret-leak safety via minimal upload surface).
+file_mounts:
+  ~/sky_workdir/pixi.toml: pod/pixi.toml
+  ~/sky_workdir/pixi.lock: pod/pixi.lock
+  ~/sky_workdir/scripts/idle-watch.sh: scripts/idle-watch.sh
 
 setup: |
   set -e

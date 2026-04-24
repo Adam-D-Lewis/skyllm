@@ -108,34 +108,33 @@ Each dir is also a natural place for future per-model assets (chat templates, ev
 
 ---
 
-## Phase 3 — Python CLI (`skyllm`)
+## Phase 3 — Python CLI (`skyllm`) ✅ (2026-04-24)
 
-Goal: `skyllm up <model>` replaces `make up`. Flexible overrides, no bash.
+Goal: `skyllm up <model>` replaces `make up`. Catalog drives identity, no bash.
 
-Scope:
-- `pyproject.toml` (pixi workspace or plain hatchling — probably pixi so the whole repo is a pixi project).
-- Deps: typer (CLI), pydantic (model.yaml schema), ruamel.yaml or pyyaml, `skypilot[runpod]`.
-- Commands:
-  - `skyllm list` — scan `models/`, print `name | engine | tier | hf_repo | notes`.
-  - `skyllm up <model> [--tier=...] [--override KEY=VAL ...] [--dry-run]`
-  - `skyllm down`
-  - `skyllm status`
-  - `skyllm logs`
-  - `skyllm health` (hits the public URL like the current Makefile target)
-  - `skyllm cost`
-  - `skyllm budget` (runs `scripts/budget-check.sh`)
-- `up` control flow:
-  1. Load `models/<name>/model.yaml`, validate via pydantic.
-  2. Resolve `(engine, tier)` → preset path (`sky.yaml` / `sky-big.yaml` / `sky-llamacpp.yaml`). `--tier` overrides.
-  3. Build env dict: `.env` values + model fields (`LLM_MODEL`, `LLM_HF_REPO`, `LLM_HF_FILE`, …) + `--override KEY=VAL` entries.
-  4. Either shell out to `sky launch -c llm -y <preset> --env-file .env --env KEY=VAL …` or call `sky.api.launch(...)`. Start with shell-out; migrate to the Python API if it gives us something concrete.
-  5. `--dry-run` prints the resolved command + env without launching.
-- Keep the Makefile as a thin alias layer for muscle memory (`make up` → `skyllm up <default-model>`), or delete it. Defer the call.
+Status: **Done.** E2E on RunPod validated 2026-04-24: `skyllm up qwen-0.5b` provisions an RTXA5000 in RunPod CA, `pixi install -e vllm` runs against the file-mounted `pod/pixi.toml`, vLLM serves `/v1/models` via the Cloudflare tunnel, `skyllm down` tears down cleanly.
 
-Open questions:
-- Default model when `skyllm up` is called with no argument — probably `qwen-0.5b` to match current behavior.
-- Override granularity. `--override accelerators='{H100:1}'` requires mutating the YAML before `sky launch` sees it. v1 can restrict overrides to env vars (which SkyPilot passes through natively) and punt on resource-block overrides.
-- Status of `$LLM_MODEL` in `.env` — probably removed; the CLI is now the source of truth.
+What shipped:
+- `skyllm/cli.py` — typer app with `list / up / down / status / logs / health / cost / budget` + `--dry-run` on `up`. Shells out to `sky launch`. Default model is `qwen-0.5b`.
+- `pyproject.toml` at repo root — declares the `skyllm` package (hatchling) with `[project.scripts] skyllm = "skyllm.cli:app"`. Runtime deps: pydantic, pyyaml, typer, requests.
+- **Pixi split** — root `pixi.toml` now holds *only* the `cli` env (set as default: `pixi run skyllm …` works with no `-e`). Pod engine envs (`vllm`, `llamacpp`) moved to `pod/pixi.toml` + `pod/pixi.lock`. Clean isolation — nothing from the root workspace can accidentally ship to RunPod.
+- **`workdir: .` → explicit `file_mounts`** in all four sky YAMLs. Only three files ride up to the pod: `pod/pixi.toml`, `pod/pixi.lock`, `scripts/idle-watch.sh`. Accidental-secret-leakage surface = zero.
+- **Makefile deleted.** `Makefile` targets (`make up/down/health/…`) are gone; README fully switched to `pixi run skyllm …`.
+- **`.env.example` stripped** of `LLM_MODEL` / `LLM_HF_REPO` / `LLM_HF_FILE` — model identity lives in the catalog now. The CLI injects those three as `--env KEY=VAL` to SkyPilot, which the preset YAMLs' `envs:` blocks consume at launch.
+- `skyllm up qwen3-coder-next` is not on the proven list — see "Deferred" below.
+
+Decisions made during Phase 3 (not in the original scope):
+- **Override surface deleted, not narrowed.** Original plan had `--override KEY=VAL`; dropped entirely. Anyone wanting a one-off override just edits `.env` (which wins over `--env`, see "Gotchas"). Catalog is the source of truth; `.env` is an escape hatch.
+- **`skypilot[runpod]` is NOT installed in the cli pixi env.** Rely on the user's global `pip install skypilot[runpod]` (per README step 1) for the `sky` binary. Keeps the cli env small and CUDA-free.
+- **Pre-checks for stale `.env` vars were considered and rejected.** If the user leaves `LLM_HF_REPO` in `.env`, it silently overrides the catalog's value (see Gotchas). Decision: leave `.env` as an override mechanism rather than add defensive validation.
+
+Deferred (to Phase 4 or first real use):
+- **`skyllm up qwen3-coder-next` e2e.** Attempted 2026-04-24; hit two orthogonal issues, neither of which is a CLI bug:
+  1. llama.cpp's `common_pull_file` fails (`status: -1`) on the unsloth MXFP4 GGUF. Error signature matches [issue #21280](https://github.com/ggml-org/llama.cpp/issues/21280) exactly on the first two log lines. We're on conda-forge's build 8722; GitHub HEAD is ~b8920; conda-forge lag is blocking the fix. Workaround would be pre-downloading via `huggingface-cli` in the sky YAML's setup, then passing `-m <path>` to `llama-server`.
+  2. L40S (48 GB) can't hold the 48 GB MXFP4 MoE weights without CPU offload — reports 44.4 GB usable VRAM. Our catalog entry is `tier: 48-80gb`, which is nominally accurate but the 48 GB end only works for quants ≤ ~40 GB. A100-80GB / H100 would work but availability was tight every time we tried.
+
+Gotchas worth knowing for whoever picks this up:
+- **`--env-file` overrides `--env`** in SkyPilot (documented [here](https://docs.skypilot.co/en/latest/running-jobs/environment-variables.html); counterintuitive relative to CLI conventions). Any key that lives in both `.env` and the CLI's `--env` flag will take its value from `.env`. This is why stale model-identity lines in `.env` silently broke our first `qwen3-coder-next` launch.
 
 ---
 
@@ -180,4 +179,4 @@ Phase 1 first — biggest leverage, touches all three YAMLs once and makes phase
 
 ## Next step
 
-Phase 1 is closed. Pick up with **Phase 2 (model catalog)** or **Phase 3 (skyllm CLI)** — Phase 2 is cheap data-only work and can run in parallel with Phase 3 if desired, but Phase 3 is the real leverage (replaces `make up` with `skyllm up <model>`).
+Phases 1–3 are closed. The natural next move is **Phase 4 (multi-provider)** when/if RunPod availability becomes a real pain point, OR one of the Phase 3 deferrals above if the big-tier llama.cpp path becomes load-bearing. Neither is urgent — the scaffold is production-shaped as-is for single-provider 24 GB-tier use.
