@@ -262,8 +262,9 @@ skypilot-llms/
 │   └── qwen3-coder-next-80gb/model.yaml   # 80gb pure-GPU route
 ├── docs/
 │   ├── alternatives.md       # why not SkyServe / dstack
+│   ├── landscape.md          # commercial / open-source competitors
 │   ├── pixi.md               # pixi env shape + RunPod lessons
-│   ├── roadmap.md            # phased plan (pixi → catalog → CLI → multi-provider)
+│   ├── roadmap/              # phased plan (pixi → catalog → CLI → multi-provider)
 │   └── toc.md                # repo tour
 ├── scripts/
 │   ├── idle-watch.sh         # exits the run block when the engine is idle

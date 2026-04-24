@@ -11,7 +11,7 @@ notes: |
 
   Exists alongside models/qwen3-coder-next/ (tier: 24gb-cpumoe) because the
   catalog schema can't express two deployment profiles for a single model
-  yet — see docs/roadmap.md "Known schema gap". When that's fixed, collapse
+  yet — see docs/roadmap/phase-3-cli.md "Known schema gap". When that's fixed, collapse
   the two entries.
 
   Trade-off vs. the cpumoe variant: faster tokens (pure VRAM bandwidth) at

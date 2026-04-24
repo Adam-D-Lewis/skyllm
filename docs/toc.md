@@ -24,7 +24,7 @@ One directory per model, each with a `model.yaml` matching `skyllm/schema.py`. C
 
 - **`qwen-0.5b/`** — vllm + 24 GB, `Qwen/Qwen2.5-0.5B-Instruct`. Default model for `skyllm up`; fast stack-test.
 - **`qwen3-coder-next/`** — llamacpp + `24gb-cpumoe`, `unsloth/Qwen3-Coder-Next-GGUF` (MXFP4 MoE, ~48 GB). Runs on a cheap 24 GB card with expert weights offloaded to ~96 GB system RAM. Correctness-smoke path.
-- **`qwen3-coder-next-80gb/`** — Same model, tier `80gb`. Pure-GPU variant on A100-80GB / H100. Fast (~100 tok/s gen) at several × the hourly cost. Two entries share the model because the schema can't yet express two deployment profiles for one model (see `docs/roadmap.md` "Known schema gap").
+- **`qwen3-coder-next-80gb/`** — Same model, tier `80gb`. Pure-GPU variant on A100-80GB / H100. Fast (~100 tok/s gen) at several × the hourly cost. Two entries share the model because the schema can't yet express two deployment profiles for one model (see [`docs/roadmap/phase-3-cli.md`](roadmap/phase-3-cli.md) "Known schema gap").
 
 Drop a new directory + `model.yaml` in here to add a model; no code changes needed.
 
@@ -53,7 +53,7 @@ The engine split exists because `vllm/vllm-openai` and the llama.cpp images don'
 - **`alternatives.md`** — Decision log for *engine / framework* choices. Covers why vLLM was chosen as the default engine (SkyServe + dstack rejection rationale, the sshd-on-RunPod constraint that rules out pinning app images), and what would have to change to re-evaluate. Dated so you know when to re-verify. Not to be confused with `landscape.md`.
 - **`landscape.md`** — Commercial / open-source *competitors* — Ollama Cloud, HuggingFace Inference Endpoints, Modal, Baseten, Together / Fireworks / Groq / etc. Grouped by how closely each actually overlaps with what we do, with honest tradeoffs on each axis.
 - **`pixi.md`** — Why the pixi envs look the way they do: pypi vllm pulling CUDA-enabled torch, the conda-forge cuda129 llama.cpp build, the `[system-requirements] cuda` declaration that RunPod forces, and the `LD_PRELOAD` / direct-env-binary workaround for the libstdc++ / libicui18n ABI trap.
-- **`roadmap.md`** — Phased plan. Phase 1 (pixi swap) ✅, Phase 2 (model catalog) ✅, Phase 3 (`skyllm` CLI) ✅, Phase 4 (multi-provider) deferred.
+- **`roadmap/`** — Phased plan, split across files for readability. [`roadmap/README.md`](roadmap/README.md) is the 1-page summary + phase index; per-phase files (`phase-1-pixi.md`, `phase-2-catalog.md`, `phase-3-cli.md`, `phase-4-multi-provider.md`) hold the detail. [`roadmap/variance-tracker.md`](roadmap/variance-tracker.md) is the cross-phase table of things that differ across providers. Status: Phase 1 (pixi swap) ✅, Phase 2 (model catalog) ✅, Phase 3 (`skyllm` CLI) ✅, Phase 4 (multi-provider) deferred.
 - **`toc.md`** — This file.
 
 ## The shape of it
