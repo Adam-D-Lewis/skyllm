@@ -9,9 +9,9 @@ set -euo pipefail
 
 # Prometheus counter to poll on /metrics to detect activity. Default is
 # vLLM's; the llama.cpp preset overrides this via IDLE_METRIC in its YAML.
-#   vLLM:       vllm:generation_tokens_total
+#   vLLM:       vllm:generation_tokens
 #   llama.cpp:  llamacpp:tokens_predicted_total
-: "${IDLE_METRIC:=vllm:generation_tokens_total}"
+: "${IDLE_METRIC:=vllm:generation_tokens}"
 METRIC="$IDLE_METRIC"
 POLL_SECONDS=60
 IDLE_SECONDS=$((IDLE_MINUTES * 60))
