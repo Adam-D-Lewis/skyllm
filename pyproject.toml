@@ -12,6 +12,7 @@ dependencies = [
     "pyyaml",
     "typer",
     "requests",
+    "skypilot[runpod]",
 ]
 
 # Console entry point. Pixi installs this package editable into the `cli`

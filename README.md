@@ -8,15 +8,15 @@ One `skyllm up` spins up a 24 GB+ NVIDIA GPU on RunPod, starts vLLM's OpenAI-com
 
 Run bigger models than your local GPU can handle, without paying for a 24/7 cloud instance. Designed for occasional home use: spin up, poke at a model for an hour, tear down, pay cents.
 
+> **Single-user design.** This project is optimized for one person using one model at a time — especially the llama.cpp variants, which are tuned for single-thread inference. You *can* configure it for concurrent users, but that's not currently the goal. If you need multi-user serving with request queuing, consider a managed API (Together, Fireworks, Modal).
+
 ## Stack
 
 | Piece | What it does |
 |---|---|
 | **SkyPilot** | Provisions the GPU on RunPod, handles autostop/teardown |
-| **vLLM** | Serves the model with an OpenAI-compatible API. Pod runs `vllm/vllm-openai:latest` directly — no custom Docker image to maintain. |
+| **vLLM** or **llama.cpp** | Serves the model with an OpenAI-compatible API. Engine is selected per catalog entry — vLLM for safetensors/AWQ/GPTQ, llama.cpp for GGUF (incl. CPU-offloaded MoE). vLLM runs `vllm/vllm-openai:latest` directly; llama.cpp installs via pixi on the pod. No custom Docker image to maintain either way. |
 | **Cloudflare Tunnel** | Gives you a stable public URL without opening ports |
-
-For llama.cpp / GGUF workflows, see the companion `llama-router` project — this repo is vLLM-native for cloud. See [`docs/alternatives.md`](docs/alternatives.md) for why the split.
 
 ## Safeguards against surprise bills
 
@@ -30,96 +30,151 @@ Belt, suspenders, and a third belt:
 
 ## Setup
 
+This section walks you through everything from zero to a working endpoint. If you're already familiar with Cloudflare and RunPod, you can skim.
+
 ### Prerequisites
 
-- A domain managed by Cloudflare (free CF account + ~$10/yr registration).
-- A RunPod account with a payment method and an API key.
-- Python 3.10+ and Docker locally (for the SkyPilot CLI).
-- [pixi](https://pixi.sh/) for the local CLI environment (single static binary).
+| Requirement | Why you need it | How to get it |
+|---|---|---|
+| **Cloudflare account** | Provides a stable public URL via Tunnel (no port forwarding needed) | Free at <https://dash.cloudflare.com/sign-up> |
+| **A domain on Cloudflare** | The tunnel routes `llm.yourdomain.com` to your pod | ~$10/yr domain registration, or use a free subdomain on a domain you already manage. The domain *must* be managed by Cloudflare (DNS settings → nameservers point to CF). |
+| **RunPod account** | Spins up the GPU on demand | Sign up at <https://www.runpod.io/> and add a payment method |
+| **pixi** | Manages the local CLI environment (single static binary, no Python install needed) | <https://pixi.sh/latest/> — one-liner install on Linux/macOS |
+| **SkyPilot CLI** | Provisions the GPU on RunPod | Installed automatically by `pixi install` (step 5) — listed as a dependency in `pyproject.toml` |
+| **Docker** (optional) | Only needed if SkyPilot asks for it — most setups work without it |
 
-### 1. Install SkyPilot and the `skyllm` CLI
+### Step 1 — Install pixi
 
 ```bash
-# SkyPilot CLI + RunPod provider — puts `sky` on your PATH.
-pip install "skypilot[runpod]"
-# Provide the RunPod API key when prompted (or export RUNPOD_API_KEY first).
-sky check runpod
-
-# The repo's own CLI (local env; no CUDA). The root pixi.toml has `cli` as
-# its default env, so no `-e` flag is needed. This creates the `skyllm`
-# entry point inside the pixi env.
-pixi install
+# Install pixi (Linux/macOS one-liner):
+curl -fsSL https://pixi.sh/install.sh | sh
+# Then restart your shell or run: source ~/.bashrc (or ~/.zshrc)
 ```
 
-Run the CLI as `pixi run skyllm <cmd>`, or drop into the env once
-with `pixi shell` and then call bare `skyllm`. The pod-side pixi workspace
-(`pod/pixi.toml` + `pod/pixi.lock`) is deliberately isolated from this
-one — see "Layout" below.
+SkyPilot (with RunPod support) is declared in `pyproject.toml`, so `pixi install` in step 5 will pull it into the local env automatically — no separate `pip install` needed.
 
-### 2. Create a Cloudflare Tunnel
+### Step 2 — Configure RunPod
 
-1. <https://one.dash.cloudflare.com/> → **Networks** → **Tunnels** → **Create a tunnel**.
-2. Connector type: **Cloudflared**.
+1. Go to <https://www.runpod.io/console/user/settings> → **API Keys** → **Create New Key**.
+2. Copy the key — you'll paste it into `.env` (step 4).
+3. **Set a monthly spend limit** (non-optional — protects you from surprise bills):
+   Go to <https://www.runpod.io/console/user/billing> and cap monthly spend at whatever you're willing to lose. $20/mo is plenty for occasional home use.
+
+### Step 3 — Create a Cloudflare Tunnel
+
+This gives you a stable public URL (`llm.yourdomain.com`) that always points to your pod, even though the pod itself comes and goes.
+
+1. Go to <https://one.dash.cloudflare.com/> → **Networks** → **Tunnels** → **Create a tunnel**.
+2. Choose connector type: **Cloudflared**.
 3. Name it something like `llm-gpu`.
-4. Under **Public Hostname**, add:
-   - Subdomain: `llm` (or whatever you want — matches `LLM_HOSTNAME` in `.env`)
-   - Domain: *your CF-managed domain*
-   - Service: `HTTP` → `localhost:8080`
-5. Copy the **tunnel token** shown under "Install and run a connector" → paste into `.env` as `CF_TUNNEL_TOKEN`.
+4. Under **Public Hostname**, add a route:
+   - **Subdomain**: `llm` (or whatever you like — this becomes `llm.yourdomain.com`)
+   - **Domain**: your Cloudflare-managed domain
+   - **Service type**: `HTTP`
+   - **URL**: `localhost:8080`
+5. Click **Save tunnel**.
+6. Go to the **Tunnels** page, click your tunnel name, then **Public Hostname** → **Edit** → scroll to **Token**.
+7. Copy the **token** (a long base64 string) — you'll paste it into `.env` (step 4).
 
-CF auto-creates the DNS record for you. The hostname is now *permanently* pointed at whichever machine is running `cloudflared` with that token.
+> 💡 Cloudflare auto-creates the DNS record for you. The hostname is now permanently pointed at whichever machine runs `cloudflared` with that token. You don't need to do anything with DNS manually.
 
-### 3. Fill in `.env`
+### Step 4 — Fill in `.env`
 
 ```bash
 cp .env.example .env
-# Edit .env — at minimum set LLM_HOSTNAME, CF_TUNNEL_TOKEN, LLM_API_KEY, RUNPOD_API_KEY
 ```
 
-Generate `LLM_API_KEY` with `openssl rand -hex 32`.
+Edit `.env` and set these four values:
 
-> ⚠️ **`LLM_API_KEY` is the only thing gating your endpoint from the public internet.** A Cloudflare Tunnel routes `https://llm.yourdomain.com/` to your pod but does *not* authenticate clients at the CF edge — anyone who resolves the hostname can probe it. llama-server rejects anything without the bearer, so a strong random key (the `openssl` command above produces 256 bits of entropy) is what keeps scanners out. Do **not** use a short memorable string. If you want edge-level auth (Cloudflare Access, etc.) on top, see [`docs/roadmap/edge-auth.md`](docs/roadmap/edge-auth.md).
+| Variable | Where to get it | Example |
+|---|---|---|
+| `LLM_HOSTNAME` | Your chosen hostname | `llm.yourdomain.com` |
+| `CF_TUNNEL_TOKEN` | Cloudflare Tunnel page (step 3, item 7) | `abc123+longbase64string==` |
+| `LLM_API_KEY` | Generate with `openssl rand -hex 32` | `a1b2c3d4...` (64 hex chars) |
+| `RUNPOD_API_KEY` | RunPod settings → API Keys (step 2, item 2) | `pod-abc123...` |
 
-### 4. Set a RunPod spend limit
-
-Non-optional. Go to <https://www.runpod.io/console/user/billing> and cap monthly spend at whatever you're willing to lose if everything else breaks. $20/mo is plenty for occasional home use.
-
-### 5. Launch
+Generate a strong API key:
 
 ```bash
-# Default model (qwen-0.5b, vLLM, 24 GB tier) — fast stack-test.
-pixi run skyllm up
-
-# Or pick any entry from `skyllm list`:
-pixi run skyllm up qwen3-coder-next
+openssl rand -hex 32
 ```
 
-First launch takes ~5 minutes (provisioning + image pull + model download). Subsequent cold launches re-pay the model download unless you've configured an HF cache bucket (see [Bigger models](#bigger-models)). The `vllm/vllm-openai` image is ~10 GB — first pull is slow, cached thereafter by RunPod.
+> ⚠️ **`LLM_API_KEY` is the only thing gating your endpoint from the public internet.** The Cloudflare Tunnel routes traffic to your pod but does *not* authenticate clients — anyone who resolves the hostname can probe it. A strong random key (the `openssl` command produces 256 bits of entropy) is what keeps scanners out. Do **not** use a short or memorable string. If you want edge-level auth (Cloudflare Access, etc.), see [`docs/roadmap/edge-auth.md`](docs/roadmap/edge-auth.md).
 
-### 6. Use it
+Optional: if you plan to use gated HuggingFace models (Llama, Gemma, Mistral-Instruct, etc.), add your HF token:
 
 ```bash
-# From anywhere on the internet:
+HF_TOKEN=hf_xxxxxxxxxxxxxxxxxxxx
+```
+
+### Step 5 — Create the local environment and launch
+
+```bash
+# Create and install the local CLI environment
+pixi install
+
+# Drop into the environment (optional — you can also prefix every command with `pixi run`)
+pixi shell
+
+# Launch the default model (qwen-0.5b, vLLM, 24 GB tier) — fast stack-test
+skyllm up
+
+# Or pick any model from the catalog:
+skyllm list          # see all available models
+skyllm up qwen3.6-27b   # 27B dense VLM on 24 GB, ~40 tok/s
+```
+
+First launch takes ~5 minutes (provisioning + image pull + model download). The `vllm/vllm-openai` image is ~10 GB — the first pull is slow, but it's cached by RunPod thereafter.
+
+### Step 6 — Use it
+
+Because the endpoint speaks the OpenAI API format, it plugs into virtually any consumer tool that accepts an OpenAI-compatible base URL. Just point the tool at `https://llm.yourdomain.com/v1` and supply your `LLM_API_KEY`.
+
+Popular options:
+
+| Tool | What it is | How to connect |
+|---|---|---|
+| **[Open WebUI](https://github.com/open-webui/open-webui)** | Full-featured browser chat UI (Ollama-compatible) | Add a new OpenAI-compatible provider with your hostname + API key |
+| **[Cherry Studio](https://github.com/kangfenmao/cherry-studio)** | Desktop chat client with multi-provider support | Add OpenAI provider, set base URL and key |
+| **[AnythingLLM](https://github.com/Mintplex-Labs/anything-llm)** | RAG chat with document upload | Add OpenAI endpoint in settings |
+| **[FastChat](https://github.com/lm-sys/FastChat)** | Web UI for chatting with LLMs | Set `--server-base-url` to your hostname |
+| **Any OpenAI SDK client** | Your own scripts, bots, automations | `base_url="https://llm.yourdomain.com/v1"`, `api_key="..."` |
+
+The key is always the same two values:
+- **Base URL**: `https://llm.yourdomain.com/v1`
+- **API key**: the `LLM_API_KEY` you set in `.env`
+
+#### Quick curl test
+
+From anywhere on the internet:
+
+```bash
 curl https://llm.yourdomain.com/v1/chat/completions \
   -H "Authorization: Bearer $LLM_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"model": "any", "messages": [{"role": "user", "content": "hi"}]}'
 ```
 
-Any OpenAI-SDK client works:
+#### Usage with the OpenAI Python SDK
 
 ```python
 from openai import OpenAI
 client = OpenAI(base_url="https://llm.yourdomain.com/v1", api_key="<your LLM_API_KEY>")
+response = client.chat.completions.create(model="any", messages=[{"role": "user", "content": "hi"}])
+print(response.choices[0].message.content)
 ```
 
-### 7. Tear down when done
+### Step 7 — Tear down when done
 
 ```bash
-pixi run skyllm down
+skyllm down
 ```
 
-If you forget, the safeguards kick in. But `skyllm down` is instant and saves you pennies per minute.
+If you forget, the safeguards (idle auto-shutdown, wall-clock cap, budget check) will eventually shut it down. But `skyllm down` is instant and saves you pennies per minute.
+
+---
+
+**That's it!** You now have a stable public URL that spins up a GPU on demand. Read on for daily-use commands, bigger models, and cost-saving tips.
 
 ## Daily use
 
@@ -128,7 +183,7 @@ All commands below are `pixi run skyllm <cmd>` (drop the `pixi run` prefix insid
 | Command | What it does |
 |---|---|
 | `skyllm --help` | List all commands |
-| `skyllm list` | Show catalog entries (name / engine / tier / HF repo) |
+| `skyllm list` | List available models (name / engine / tier / HF repo) |
 | `skyllm up [<model>]` | Launch GPU + start serving. Default model: `qwen-0.5b`. `--dry-run` prints the resolved `sky launch` command |
 | `skyllm down` | Terminate cluster |
 | `skyllm status` | Is it running? |
@@ -137,17 +192,17 @@ All commands below are `pixi run skyllm <cmd>` (drop the `pixi run` prefix insid
 | `skyllm cost` | SkyPilot's running cost report |
 | `skyllm budget` | Run the budget guard once (also cron-able) |
 
-Model identity comes from the catalog (`models/<name>/model.yaml`), not `.env`. Use `skyllm list` to see what's available, or add a new entry (any directory under `models/` with a `model.yaml` conforming to `skyllm/schema.py` is auto-discovered).
+Each model lives in its own directory under `models/<name>/model.yaml` — that's the "catalog". Run `skyllm list` to see what's available, or add a new model by dropping in another directory with a `model.yaml` conforming to `skyllm/schema.py` (auto-discovered, no registration step). Model identity is *not* set in `.env`.
 
 ## Bigger models
 
-The default `qwen-0.5b` catalog entry is a 0.5B toy model — fine for testing the pipeline, useless for real work. To launch something bigger, either pick an existing catalog entry:
+The default `qwen-0.5b` model is a 0.5B toy — fine for testing the pipeline, useless for real work. To launch something bigger, either pick an existing model (`skyllm list`):
 
 ```bash
-pixi run skyllm up qwen3-coder-next   # 80B MoE on 24 GB + CPU offload, llama.cpp
+pixi run skyllm up qwen3.6-27b   # 27B dense VLM on 24 GB, ~40 tok/s
 ```
 
-…or add a new model by dropping a `models/<name>/model.yaml` in the catalog (`pixi run validate` checks the schema). Gated HF models (Llama, Gemma, Mistral-Instruct, etc.) need `HF_TOKEN=...` in `.env`. `skyllm down && skyllm up <name>` to apply.
+…or add a new model by dropping a `models/<name>/model.yaml` (`pixi run validate` checks the schema). Gated HF models (Llama, Gemma, Mistral-Instruct, etc.) need `HF_TOKEN=...` in `.env`. `skyllm down && skyllm up <name>` to apply.
 
 **If the model is > a few GB**, the re-download on every launch gets annoying. Add an HF cache bucket:
 
@@ -183,8 +238,7 @@ The 24 GB tier (RTX 3090/4090/A5000/A6000/L40S) is fine for models up to ~14B at
 - `tier: 80gb` — A100-80GB or H100, everything in VRAM. Fast (~100 tok/s gen on Qwen3-Coder-Next MXFP4) but several × more expensive and availability-constrained.
 
 ```bash
-pixi run skyllm up qwen3-coder-next        # cpumoe route
-pixi run skyllm up qwen3-coder-next-80gb   # pure-GPU route
+pixi run skyllm up qwen3.6-27b        # 24 GB dense (fits on 3090/4090)
 ```
 
 The 80 GB preset ships with a shorter `MAX_RUNTIME_MINUTES` default (60 vs 240) because hourly costs are several × higher — an overnight wedge on H100 is a $200+ mistake. Everything else (tunnel, auth, idle-watch, budget-check) is identical.
@@ -259,9 +313,10 @@ skyllm/
 │   ├── schema.py                 # pydantic ModelSpec
 │   └── validate.py               # `pixi run validate`
 ├── models/                       # model catalog — one dir per entry
-│   ├── qwen-0.5b/model.yaml
-│   ├── qwen3-coder-next/model.yaml        # 24gb-cpumoe route
-│   └── qwen3-coder-next-80gb/model.yaml   # 80gb pure-GPU route
+│   ├── qwen-0.5b/model.yaml                 # vLLM, 24gb (default stack-test)
+│   ├── qwen3.6-27b/model.yaml               # llama.cpp, 24gb (dense 27B Q4_K_M)
+│   ├── qwen3-coder-next/model.yaml          # llama.cpp, 24gb-cpumoe route
+│   └── qwen3-coder-next-80gb/model.yaml     # llama.cpp, 80gb pure-GPU route
 ├── docs/
 │   ├── alternatives.md       # why not SkyServe / dstack
 │   ├── landscape.md          # commercial / open-source competitors
