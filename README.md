@@ -1,8 +1,8 @@
 # skyllm
 
-Cheap, on-demand cloud GPU running an OpenAI-compatible vLLM endpoint, reachable from any tool via a stable public URL.
+Cheap, on-demand cloud GPU running an OpenAI-compatible vLLM or llama.cpp endpoint, reachable from any tool via a stable public URL.
 
-One `skyllm up` spins up a 24 GB+ NVIDIA GPU on RunPod, starts vLLM's OpenAI-compatible server, and exposes it through a Cloudflare Tunnel at a hostname you control. Clients point at `https://llm.yourdomain.com/v1` forever — the actual GPU comes and goes, the URL stays.
+One `skyllm up` spins up a 24 GB+ NVIDIA GPU on RunPod, starts the engine selected by the model you launched (vLLM for safetensors/AWQ/GPTQ, llama.cpp for GGUF), and exposes it through a Cloudflare Tunnel at a hostname you control. Clients point at `https://llm.yourdomain.com/v1` forever — the actual GPU comes and goes, the URL stays.
 
 ## Why
 
