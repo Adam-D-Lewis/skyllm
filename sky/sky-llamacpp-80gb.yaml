@@ -27,7 +27,7 @@ envs:
   # Short cap — 80 GB cards are several × more expensive than the 24 GB
   # tier. Override in .env if you need a longer session.
   MAX_RUNTIME_MINUTES: "60"
-  IDLE_METRIC: "llamacpp:n_tokens_predicted_total"
+  IDLE_METRIC: "llamacpp:tokens_predicted_total"
 
 resources:
   cloud: runpod

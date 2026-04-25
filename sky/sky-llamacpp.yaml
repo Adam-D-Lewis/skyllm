@@ -29,7 +29,7 @@ envs:
   IDLE_MINUTES: "15"
   MAX_RUNTIME_MINUTES: "240"
   # idle-watch.sh reads this to know which Prometheus counter to poll.
-  IDLE_METRIC: "llamacpp:n_tokens_predicted_total"
+  IDLE_METRIC: "llamacpp:tokens_predicted_total"
 
 resources:
   cloud: runpod

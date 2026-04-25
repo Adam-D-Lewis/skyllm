@@ -36,7 +36,7 @@ envs:
   # deliberate constrained-hardware profile; long idle sessions here are
   # rarely what the user wants. Bump via .env if needed.
   MAX_RUNTIME_MINUTES: "120"
-  IDLE_METRIC: "llamacpp:n_tokens_predicted_total"
+  IDLE_METRIC: "llamacpp:tokens_predicted_total"
 
 resources:
   cloud: runpod
