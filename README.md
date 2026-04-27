@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/assets/busy-logo-cropped-transparent.png" alt="skyllm logo" width="320">
+</p>
+
 # skyllm
 
 Cheap, on-demand cloud GPU running an OpenAI-compatible vLLM or llama.cpp endpoint, reachable from any tool via a stable public URL.
