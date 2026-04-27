@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/busy-logo-cropped-transparent.png" alt="skyllm logo" width="320">
+  <img src="docs/assets/busy-logo-cropped.png" alt="skyllm logo" width="320">
 </p>
 
 # skyllm
